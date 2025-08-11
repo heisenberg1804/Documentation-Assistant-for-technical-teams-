@@ -1,6 +1,6 @@
-# Human-in-the-Loop LangGraph Demo (FastAPI + React)
+# HITL-project
 
-This project demonstrates a realistic Human-in-the-Loop (HITL) workflow using [LangGraph](https://github.com/langchain-ai/langgraph), embedded inside a Python FastAPI backend, with a React frontend. It is designed as a learning resource for developers interested in building interactive AI agent flows that pause for human input and then resume execution.
+A Human-in-the-Loop (HITL) workflow implementation using FastAPI backend and React frontend, with streaming capabilities and real-time human feedback integration. It is designed as a learning resource for developers interested in building interactive AI agent flows that pause for human input and then resume execution.
 
 ## What is Human-in-the-Loop (HITL)?
 
