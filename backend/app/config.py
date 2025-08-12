@@ -1,12 +1,15 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
 import os
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 class RAGConfig(BaseSettings):
     """RAG system configuration"""
     
     # Model settings
-    openai_api_key: str
+    openai_api_key: str = Field(..., env="OPENAI_API_KEY")
     embedding_model: str = "text-embedding-3-small"
     llm_model: str = "gpt-4o-mini"
     

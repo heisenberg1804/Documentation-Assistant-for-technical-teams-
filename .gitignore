@@ -21,10 +21,15 @@ wheels/
 *.egg
 hitlEnv/
 
+# Project specific
+test_docs/
+chroma_db/
+
 # Node
 node_modules/
 /frontend/build
-.env
+backend/.env.example
+backend/.env
 .env.local
 .env.development.local
 .env.test.local
