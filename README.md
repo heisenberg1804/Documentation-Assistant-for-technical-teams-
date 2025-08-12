@@ -1,6 +1,6 @@
-# HITL-project
+# Documentation Assistant for Technical Teams
 
-A Human-in-the-Loop (HITL) workflow implementation using FastAPI backend and React frontend, with streaming capabilities and real-time human feedback integration. It is designed as a learning resource for developers interested in building interactive AI agent flows that pause for human input and then resume execution.
+An AI-powered documentation assistant with human-in-the-loop capabilities, designed specifically for technical teams. Built with FastAPI backend and React frontend, featuring real-time streaming responses and collaborative feedback system. It is designed as a learning resource for developers interested in building interactive AI agent flows that pause for human input and then resume execution.
 
 ## What is Human-in-the-Loop (HITL)?
 

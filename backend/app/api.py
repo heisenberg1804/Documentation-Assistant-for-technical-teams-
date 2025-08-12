@@ -10,39 +10,39 @@ import json
 router = APIRouter()
 
 
-def run_graph_and_response(input_state, config):
-    result = graph.invoke(input_state, config)
-    state = graph.get_state(config)
-    next_nodes = state.next
-    thread_id = config["configurable"]["thread_id"]
-    if next_nodes and "human_feedback" in next_nodes:
-        run_status = "user_feedback"
-    else:
-        run_status = "finished"
-    return GraphResponse(
-        thread_id=thread_id,
-        run_status=run_status,
-        assistant_response=result["assistant_response"]
-    )
+# def run_graph_and_response(input_state, config):
+#     result = graph.invoke(input_state, config)
+#     state = graph.get_state(config)
+#     next_nodes = state.next
+#     thread_id = config["configurable"]["thread_id"]
+#     if next_nodes and "human_feedback" in next_nodes:
+#         run_status = "user_feedback"
+#     else:
+#         run_status = "finished"
+#     return GraphResponse(
+#         thread_id=thread_id,
+#         run_status=run_status,
+#         assistant_response=result["assistant_response"]
+#     )
 
-@router.post("/graph/start", response_model=GraphResponse)
-def start_graph(request: StartRequest):
-    thread_id = str(uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
-    initial_state = {"human_request": request.human_request}
+# @router.post("/graph/start", response_model=GraphResponse)
+# def start_graph(request: StartRequest):
+#     thread_id = str(uuid4())
+#     config = {"configurable": {"thread_id": thread_id}}
+#     initial_state = {"human_request": request.human_request}
 
-    return run_graph_and_response(initial_state, config)
+#     return run_graph_and_response(initial_state, config)
 
-@router.post("/graph/resume", response_model=GraphResponse)
-def resume_graph(request: ResumeRequest):
-    config = {"configurable": {"thread_id": request.thread_id}}
-    state = {"status": request.review_action}
-    if request.human_comment is not None:
-        state["human_comment"] = request.human_comment
-    print(f"State to update: {state}")
-    graph.update_state(config, state)
+# @router.post("/graph/resume", response_model=GraphResponse)
+# def resume_graph(request: ResumeRequest):
+#     config = {"configurable": {"thread_id": request.thread_id}}
+#     state = {"status": request.review_action}
+#     if request.human_comment is not None:
+#         state["human_comment"] = request.human_comment
+#     print(f"State to update: {state}")
+#     graph.update_state(config, state)
 
-    return run_graph_and_response(None, config)
+#     return run_graph_and_response(None, config)
 
 
 ################################################################################
@@ -58,6 +58,8 @@ def create_graph_streaming(request: StartRequest):
         "human_request": request.human_request
     }
     
+    print("Run Configs after create:", run_configs)
+
     return GraphResponse(
         thread_id=thread_id,
         run_status="pending", 
@@ -73,7 +75,8 @@ def resume_graph_streaming(request: ResumeRequest):
         "review_action": request.review_action,
         "human_comment": request.human_comment
     }
-    
+    print("Run Configs after resume:", run_configs)
+
     return GraphResponse(
         thread_id=thread_id,
         run_status="pending",
@@ -121,7 +124,7 @@ async def stream_graph(request: Request, thread_id: str):
                     
                 if metadata.get('langgraph_node') in ['assistant_draft', 'assistant_finalize']:
                     token_data = json.dumps({"content": msg.content})
-                    print(f"DEBUG: Sending token event with data: {token_data[:30]}...")
+                    #print(f"DEBUG: Sending token event with data: {token_data[:30]}...")
                     yield {"event": "token", "data": token_data}
             
             # After streaming completes, check if human feedback is needed
