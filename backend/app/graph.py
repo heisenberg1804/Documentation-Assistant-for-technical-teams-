@@ -6,12 +6,16 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from the backend directory
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'))
 
 # --- Model Definition ---
 # OpenAI API key should be configured in .env file
-model = ChatOpenAI(model="gpt-4o-mini", api_key=os.getenv("OPENAI_API_KEY"))
+model = ChatOpenAI(model="gpt-4", api_key=os.getenv("OPENAI_API_KEY"))
+
+# Print warning if API key is not found
+if not os.getenv("OPENAI_API_KEY"):
+    print("Warning: OPENAI_API_KEY not found in environment variables. Please check your .env file.")
 
 # --- Graph State Definition ---
 class DraftReviewState(MessagesState):
