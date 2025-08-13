@@ -1,0 +1,43 @@
+### Upload PhotoSphere sample project documentation
+POST http://localhost:8000/documents/upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="sampleProject.md"
+Content-Type: text/markdown
+
+< ./sampleProject.md
+--boundary--
+
+### Test RAG retrieval with PhotoSphere questions
+POST http://localhost:8000/rag/test
+Content-Type: application/json
+
+{
+    "query": "What are the main features of PhotoSphere?",
+    "top_k": 3
+}
+
+### Test RAG retrieval for tech stack
+POST http://localhost:8000/rag/test
+Content-Type: application/json
+
+{
+    "query": "What technologies does PhotoSphere use?",
+    "top_k": 3
+}
+
+### Test RAG retrieval for setup instructions
+POST http://localhost:8000/rag/test
+Content-Type: application/json
+
+{
+    "query": "How do I set up and run PhotoSphere locally?",
+    "top_k": 3
+}
+
+### Get document status
+GET http://localhost:8000/documents/status
+
+### Health Check
+GET http://localhost:8000/health

@@ -252,8 +252,16 @@ async def get_documents_status():
 
 # --- NEW: RAG Testing Endpoint ---
 @router.post("/rag/test")
-async def test_rag_retrieval(query: str, top_k: int = 3):
+async def test_rag_retrieval(request: Request):
     """Test RAG retrieval for debugging"""
+    
+    # Get query from request body
+    body = await request.json()
+    query = body.get("query")
+    top_k = body.get("top_k", 3)
+    
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
     
     logger.info(f"Testing RAG retrieval for query: {query}")
     
