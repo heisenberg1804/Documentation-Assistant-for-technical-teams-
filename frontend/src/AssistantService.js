@@ -1,10 +1,10 @@
 // AssistantService.js
-// Centralized service for assistant session/conversation API calls
+// Enhanced service for assistant session/conversation API calls with RAG support
 
 const BASE_URL = "http://localhost:8000";
 
 export default class AssistantService {
-  // Original blocking API methods
+  // Original blocking API methods (unchanged)
   static async startConversation(human_request) {
     try {
       const response = await fetch(`${BASE_URL}/graph/start`, {
@@ -40,7 +40,7 @@ export default class AssistantService {
     return response.json();
   }
 
-  // New streaming API methods
+  // Streaming API methods (enhanced with sources handling)
   static async createStreamingConversation(human_request) {
     try {
       const response = await fetch(`${BASE_URL}/graph/stream/create`, {
@@ -92,15 +92,31 @@ export default class AssistantService {
         onErrorCallback(error);
       }
     });
+
+    // NEW: Handle sources events (RAG context sources)
+    eventSource.addEventListener('sources', (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        onMessageCallback({ 
+          sources: data.sources, 
+          confidence: data.confidence,
+          retrieval_time_ms: data.retrieval_time_ms,
+          source_types: data.source_types
+        });
+        console.log(`Received sources event: ${data.sources?.length || 0} sources`);
+      } catch (error) {
+        console.error("Error parsing sources event:", error, "Raw data:", event.data);
+        onErrorCallback(error);
+      }
+    });
     
     // Handle status events (user_feedback, finished)
     eventSource.addEventListener('status', (event) => {
       try {
         const data = JSON.parse(event.data);
-        onMessageCallback({ status: data.status });
+        onMessageCallback({ status: data.status, metrics: data.metrics });
         
         // Mark that we've received a status event for this connection
-        // This helps us distinguish between normal completion and errors
         if (!window._hasReceivedStatusEvent) {
           window._hasReceivedStatusEvent = {};
         }
@@ -139,16 +155,177 @@ export default class AssistantService {
       if (eventSource.readyState !== EventSource.CLOSED && eventSource.readyState !== EventSource.CONNECTING) {
         console.error("SSE connection error:", error);
         eventSource.close();
-        // Pass a proper error object with a message to avoid 'undefined' errors
         onErrorCallback(new Error("Connection error or server disconnected"));
       } else {
-        // If it's a normal close or reconnecting, call the complete callback
         console.log("Stream completed normally");
         onCompleteCallback();
       }
     };
     
-    // Return the eventSource so it can be closed externally if needed
     return eventSource;
+  }
+
+  // NEW: Document Management Methods
+
+  /**
+   * Upload a document for RAG processing
+   * @param {File} file - The file to upload (PDF, MD, or TXT)
+   * @returns {Promise<Object>} Upload result with status and chunk count
+   */
+  static async uploadDocument(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch(`${BASE_URL}/documents/upload`, {
+        method: "POST",
+        credentials: "include",
+        body: formData
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Upload failed: ${response.status} ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log(`Document upload result:`, result);
+      return result;
+    } catch (error) {
+      console.error("Document upload failed:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get document indexing statistics
+   * @returns {Promise<Object>} Stats about indexed documents and validated answers
+   */
+  static async getDocumentStats() {
+    try {
+      const response = await fetch(`${BASE_URL}/documents/status`, {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        credentials: "include"
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch document stats: ${response.status}`);
+      }
+
+      const stats = await response.json();
+      console.log("Document stats:", stats);
+      return stats;
+    } catch (error) {
+      console.error("Failed to get document stats:", error);
+      // Return default stats instead of throwing
+      return { total_chunks: 0, total_validated: 0, cache_stats: {} };
+    }
+  }
+
+  /**
+   * Test RAG retrieval (for debugging)
+   * @param {string} query - Query to test
+   * @param {number} topK - Number of results to return
+   * @returns {Promise<Object>} RAG test results
+   */
+  static async testRAGRetrieval(query, topK = 3) {
+    try {
+      const response = await fetch(`${BASE_URL}/rag/test`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        credentials: "include",
+        body: JSON.stringify({ query, top_k: topK })
+      });
+
+      if (!response.ok) {
+        throw new Error(`RAG test failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log("RAG test result:", result);
+      return result;
+    } catch (error) {
+      console.error("RAG test failed:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check system health
+   * @returns {Promise<Object>} Health status including RAG system status
+   */
+  static async checkHealth() {
+    try {
+      const response = await fetch(`${BASE_URL}/health`, {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        credentials: "include"
+      });
+
+      if (!response.ok) {
+        throw new Error(`Health check failed: ${response.status}`);
+      }
+
+      const health = await response.json();
+      console.log("System health:", health);
+      return health;
+    } catch (error) {
+      console.error("Health check failed:", error);
+      return { status: "unknown", error: error.message };
+    }
+  }
+
+  /**
+   * Get simple analytics (basic version)
+   * @returns {Promise<Object>} Basic analytics data
+   */
+  static async getSimpleAnalytics() {
+    try {
+      const response = await fetch(`${BASE_URL}/analytics/simple`, {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        credentials: "include"
+      });
+
+      if (!response.ok) {
+        throw new Error(`Analytics failed: ${response.status}`);
+      }
+
+      const analytics = await response.json();
+      console.log("Simple analytics:", analytics);
+      return analytics;
+    } catch (error) {
+      console.error("Analytics request failed:", error);
+      return { total_events: 0, error: error.message };
+    }
+  }
+
+  /**
+   * Clear system caches (development helper)
+   * @returns {Promise<Object>} Operation result
+   */
+  static async clearCaches() {
+    try {
+      const response = await fetch(`${BASE_URL}/cache/clear`, {
+        method: "POST",
+        headers: { "Accept": "application/json" },
+        credentials: "include"
+      });
+
+      if (!response.ok) {
+        throw new Error(`Cache clear failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log("Caches cleared:", result);
+      return result;
+    } catch (error) {
+      console.error("Cache clear failed:", error);
+      throw error;
+    }
   }
 }

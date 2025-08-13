@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Literal, Optional, List, Dict
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langchain_openai import ChatOpenAI
@@ -24,37 +25,42 @@ class DraftReviewState(MessagesState):
     human_comment: Optional[str]
     status: Literal["approved", "feedback"]
     assistant_response: str
-    # NEW RAG-related fields
+    # RAG-related fields
     rag_context: Optional[str] = None
     rag_sources: Optional[List[Dict]] = None
     response_sources: Optional[List[Dict]] = None
     retrieval_confidence: Optional[float] = None
+    # Performance tracking fields
+    retrieval_start_time: Optional[float] = None
+    response_generation_time_ms: Optional[float] = None
 
-# --- NEW: Retrieve Context Node ---
+# --- Retrieve Context Node ---
 def retrieve_context(state: DraftReviewState) -> DraftReviewState:
-    """
-    Retrieve relevant context using dual-retrieval system
+    """Retrieve relevant context using dual-retrieval system"""
     
-    This node:
-    1. Takes the human_request from state
-    2. Performs dual-retrieval (cache → validated → RAG)
-    3. Formats context for LLM consumption
-    4. Adds sources for frontend display
-    """
+    retrieval_start = time.time()
+    query = state["human_request"]
     
-    logger.info(f"Retrieving context for query: {state['human_request'][:50]}...")
+    logger.info(f"Retrieving context for query: {query[:50]}...")
     
     try:
         # Get retriever instance
         retriever = get_dual_retriever()
         
         # Perform retrieval
-        query = state["human_request"]
         results = retriever.retrieve(query=query, top_k=5)
+        
+        retrieval_time_ms = (time.time() - retrieval_start) * 1000
         
         if not results:
             logger.warning("No retrieval results found")
-            return {**state, "rag_context": "", "rag_sources": [], "retrieval_confidence": 0.0}
+            return {
+                **state, 
+                "rag_context": "", 
+                "rag_sources": [], 
+                "retrieval_confidence": 0.0,
+                "response_generation_time_ms": retrieval_time_ms
+            }
         
         # Format context for LLM
         context_parts = []
@@ -64,6 +70,9 @@ def retrieve_context(state: DraftReviewState) -> DraftReviewState:
         for i, result in enumerate(results, 1):
             # Add to context with clear labeling
             source_label = "✓ Validated Answer" if result.source == 'validated' else "📄 Documentation"
+            if result.source == 'cache':
+                source_label = "⚡ Cached Result"
+            
             context_parts.append(
                 f"[Source {i}: {source_label} - Confidence: {result.confidence:.2f}]\n"
                 f"{result.content}\n"
@@ -79,7 +88,8 @@ def retrieve_context(state: DraftReviewState) -> DraftReviewState:
                     "file": result.metadata.get('source_file', 'Unknown'),
                     "section": result.metadata.get('section', ''),
                     "validated": result.source == 'validated',
-                    "validation_info": result.validation_info
+                    "chunk_type": result.metadata.get('chunk_type', 'text'),
+                    "has_code": result.metadata.get('has_code', False)
                 }
             })
             
@@ -91,29 +101,35 @@ def retrieve_context(state: DraftReviewState) -> DraftReviewState:
         # Join context
         formatted_context = "\n---\n".join(context_parts)
         
-        logger.info(f"Retrieved {len(results)} sources with avg confidence: {avg_confidence:.3f}")
+        logger.info(f"Retrieved {len(results)} sources with avg confidence: {avg_confidence:.3f} "
+                   f"in {retrieval_time_ms:.1f}ms")
         
-        # Update state
         return {
             **state,
             "rag_context": formatted_context,
             "rag_sources": sources,
-            "retrieval_confidence": avg_confidence
+            "retrieval_confidence": avg_confidence,
+            "response_generation_time_ms": retrieval_time_ms
         }
         
     except Exception as e:
         logger.error(f"Error in retrieve_context: {e}")
-        # Graceful degradation - continue without context
+        retrieval_time_ms = (time.time() - retrieval_start) * 1000
+        
+        # Graceful degradation
         return {
             **state,
             "rag_context": "",
             "rag_sources": [],
-            "retrieval_confidence": 0.0
+            "retrieval_confidence": 0.0,
+            "response_generation_time_ms": retrieval_time_ms
         }
 
-# --- MODIFIED: Enhanced Assistant Draft Node ---
+# --- Enhanced Assistant Draft Node ---
 def assistant_draft(state: DraftReviewState) -> DraftReviewState:
     """Enhanced assistant draft with RAG context"""
+    
+    generation_start = time.time()
     
     # Get RAG context if available
     context = state.get("rag_context", "")
@@ -131,18 +147,18 @@ def assistant_draft(state: DraftReviewState) -> DraftReviewState:
 
     if (status == "feedback" and state.get("human_comment")):
         # Feedback revision with context
-        system_prompt = f"""You are an AI assistant revising your previous draft.
+        system_prompt = f"""You are an AI assistant revising your previous draft based on human feedback.
 
 {f"RELEVANT DOCUMENTATION CONTEXT:\n{context}\n" if context else ""}
-FEEDBACK FROM HUMAN: "{state["human_comment"]}"
 
-Carefully incorporate this feedback into your response. Address all comments, 
-corrections, or suggestions. Ensure your revised response fully integrates 
-the feedback, improves clarity, and resolves any issues raised.
+HUMAN FEEDBACK: "{state["human_comment"]}"
 
-{f"Use the documentation context above to ensure accuracy and completeness." if context else ""}
-DO NOT repeat the feedback verbatim in your response.
-"""
+Instructions:
+- Carefully address all points raised in the feedback
+- Incorporate corrections and improvements suggested
+- Use the documentation context to ensure accuracy
+- Provide a comprehensive, improved response
+- DO NOT repeat the feedback verbatim in your response"""
         
         system_message = SystemMessage(content=system_prompt)
         messages = [user_message] + state["messages"] + [system_message]
@@ -157,21 +173,21 @@ DO NOT repeat the feedback verbatim in your response.
             if confidence >= 0.8:
                 context_instruction = "Base your response primarily on the provided documentation context, which has high confidence."
             elif confidence >= 0.5:
-                context_instruction = "Use the provided documentation context as a reference, but supplement with your knowledge as needed."
+                context_instruction = "Use the provided documentation context as a reference, supplementing with your knowledge as needed."
             else:
-                context_instruction = "The provided context has low confidence. Use it cautiously and rely more on your base knowledge."
+                context_instruction = "The provided context has lower confidence. Use it as supporting information but rely more on your knowledge."
         
-        system_prompt = f"""You are an AI assistant. Your goal is to fully understand and fulfill the user's 
-request by preparing a relevant, clear, and helpful draft reply.
+        system_prompt = f"""You are an AI documentation assistant. Provide accurate, helpful responses to user questions.
 
 {f"RELEVANT DOCUMENTATION CONTEXT:\n{context}\n" if context else ""}
-{f"Confidence Level: {confidence:.1%}\n" if confidence > 0 else ""}
+{f"Context Confidence: {confidence:.1%}\n" if confidence > 0 else ""}
 
-Focus on addressing the user's needs directly and comprehensively.
-{context_instruction}
-Be accurate and cite specific details when relevant.
-Do not reference any previous human feedback at this stage.
-"""
+Instructions:
+- Provide a clear, comprehensive response to the user's question
+- {context_instruction if context_instruction else "Use your knowledge to provide accurate information"}
+- Structure your response logically with clear explanations
+- Include practical examples where appropriate
+- Be helpful and actionable in your advice"""
         
         system_message = SystemMessage(content=system_prompt)
         messages = [system_message, user_message]
@@ -184,103 +200,133 @@ Do not reference any previous human feedback at this stage.
         response = model.invoke(messages)
         all_messages = all_messages + [response]
         
-        logger.info("Generated assistant response successfully")
+        generation_time_ms = (time.time() - generation_start) * 1000
+        total_time_ms = state.get("response_generation_time_ms", 0) + generation_time_ms
+        
+        logger.info(f"Generated assistant response in {generation_time_ms:.1f}ms "
+                   f"(total: {total_time_ms:.1f}ms)")
         
         return {
             **state,
             "messages": all_messages,
             "assistant_response": response.content,
-            "response_sources": sources  # Pass sources forward for frontend
+            "response_sources": sources,
+            "response_generation_time_ms": total_time_ms
         }
         
     except Exception as e:
         logger.error(f"Error generating assistant response: {e}")
-        # Return error state
+        generation_time_ms = (time.time() - generation_start) * 1000
+        total_time_ms = state.get("response_generation_time_ms", 0) + generation_time_ms
+        
         return {
             **state,
-            "assistant_response": "I apologize, but I encountered an error generating a response. Please try again."
+            "assistant_response": "I apologize, but I encountered an error generating a response. Please try again.",
+            "response_generation_time_ms": total_time_ms
         }
 
-# --- MODIFIED: Enhanced Human Feedback Node ---
+# --- Safe Human Feedback Node ---
 def human_feedback(state: DraftReviewState):
-    """
-    Enhanced human feedback node that stores validated answers
+    """Human feedback node with safe analytics integration"""
     
-    When user approves (status='approved'), store the validated answer
-    """
-    
-    # Check if we should store a validated answer
-    if state.get('status') == 'approved' and state.get('assistant_response'):
-        try:
-            retriever = get_dual_retriever()
-            
-            # Get source chunk IDs if available
-            source_chunks = []
-            if state.get('rag_sources'):
-                for source in state['rag_sources']:
+    try:
+        # Safely import and use analytics
+        from app.validation_analytics import record_approval, record_feedback
+        
+        # Extract data safely
+        thread_id = state.get('thread_id', 'unknown')
+        query = state.get('human_request', '')
+        response = state.get('assistant_response', '')
+        status = state.get('status', 'unknown')
+        feedback_comment = state.get('human_comment')
+        sources = state.get('rag_sources', [])
+        confidence = state.get('retrieval_confidence', 0.0)
+        
+        # Record analytics using utility functions
+        if status == 'approved':
+            record_approval(thread_id, query, response, sources, confidence)
+        elif status == 'feedback' and feedback_comment:
+            record_feedback(thread_id, query, response, feedback_comment, sources, confidence)
+        
+        # Store validated answer if approved
+        if status == 'approved' and response:
+            try:
+                retriever = get_dual_retriever()
+                
+                # Get source chunk IDs if available
+                source_chunks = []
+                for source in sources:
                     chunk_ids = source.get('metadata', {}).get('chunk_ids', [])
                     if chunk_ids:
                         source_chunks.extend(chunk_ids)
-            
-            # Store validated answer
-            retriever.add_validated_answer(
-                query=state['human_request'],
-                answer=state['assistant_response'],
-                thread_id=state.get('thread_id', 'unknown'),
-                source_chunks=source_chunks,
-                feedback=state.get('human_comment')
-            )
-            
-            logger.info("Stored validated answer successfully")
-            
-        except Exception as e:
-            logger.error(f"Error storing validated answer: {e}")
+                
+                # Store validated answer
+                retriever.add_validated_answer(
+                    query=query,
+                    answer=response,
+                    thread_id=thread_id,
+                    source_chunks=source_chunks,
+                    feedback=feedback_comment
+                )
+                
+                logger.info(f"Stored validated answer for thread {thread_id}")
+                
+            except Exception as e:
+                logger.error(f"Error storing validated answer: {e}")
+        
+    except Exception as e:
+        logger.error(f"Error in human_feedback (non-critical): {e}")
     
     # Original function behavior - just pass through
     pass
 
-# --- UNCHANGED: Assistant Finalize Node ---
+# --- Assistant Finalize Node ---
 def assistant_finalize(state: DraftReviewState) -> DraftReviewState:
     """Finalize the approved response"""
+    
+    finalize_start = time.time()
     
     # Get the most recent assistant response from the state
     latest_response = state["assistant_response"]
     
-    system_message = SystemMessage(content="""
-You are an AI assistant. The user has approved your draft. Carefully 
-review your reply and make any final improvements to clarity, tone, and 
-completeness. Ensure the response is polished, professional, and ready 
-to be delivered as the final answer.
+    system_message = SystemMessage(content="""You are an AI assistant finalizing an approved response.
 
-DO NOT expand the response significantly or revert to earlier versions.
-Focus on polishing the MOST RECENT draft that was approved.
-""")
+The user has approved your draft. Your task is to:
+- Polish the response for maximum clarity and professionalism
+- Ensure all technical details are accurate and well-explained  
+- Improve the structure and flow if needed
+- Make it ready as a final, high-quality answer
+
+DO NOT expand the response significantly or change its fundamental approach.
+Focus on polishing the approved content.""")
     
-    # Create a focused message list with just the original request and latest response
+    # Create focused message list
     user_message = HumanMessage(content=state["human_request"])
-    assistant_message = HumanMessage(content=f"My previous draft: {latest_response}")
+    assistant_message = HumanMessage(content=f"My approved draft to finalize: {latest_response}")
     
-    # Use a more focused set of messages for the finalize step
     messages = [system_message, user_message, assistant_message]
     
     try:
         response = model.invoke(messages)
         all_messages = state['messages'] + [response]
         
-        logger.info("Finalized assistant response")
+        finalize_time_ms = (time.time() - finalize_start) * 1000
+        total_time_ms = state.get("response_generation_time_ms", 0) + finalize_time_ms
+        
+        logger.info(f"Finalized response in {finalize_time_ms:.1f}ms")
         
         return {
             **state,
             "messages": all_messages,
-            "assistant_response": response.content
+            "assistant_response": response.content,
+            "response_generation_time_ms": total_time_ms
         }
         
     except Exception as e:
         logger.error(f"Error finalizing response: {e}")
-        # Return the draft as-is if finalization fails
         return state
 
-# --- UNCHANGED: Router Function ---
+# --- Router Function ---
 def feedback_router(state: DraftReviewState) -> str:
     """Route based on user feedback status"""
     if state['status'] == 'approved':
@@ -288,18 +334,18 @@ def feedback_router(state: DraftReviewState) -> str:
     else:
         return 'assistant_draft'
 
-# --- MODIFIED: Graph Construction with retrieve_context ---
+# --- Graph Construction ---
 builder = StateGraph(DraftReviewState)
 
 # Add nodes
-builder.add_node('retrieve_context', retrieve_context)  # NEW
+builder.add_node('retrieve_context', retrieve_context)
 builder.add_node('assistant_draft', assistant_draft)
 builder.add_node('human_feedback', human_feedback)
 builder.add_node('assistant_finalize', assistant_finalize)
 
-# Modified edges to include retrieve_context
-builder.add_edge(START, 'retrieve_context')  # NEW: Start with retrieval
-builder.add_edge('retrieve_context', 'assistant_draft')  # NEW: Then draft
+# Add edges
+builder.add_edge(START, 'retrieve_context')
+builder.add_edge('retrieve_context', 'assistant_draft')
 builder.add_edge('assistant_draft', 'human_feedback')
 builder.add_conditional_edges(
     'human_feedback', 

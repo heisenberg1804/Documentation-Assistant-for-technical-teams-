@@ -41,3 +41,6 @@ GET http://localhost:8000/documents/status
 
 ### Health Check
 GET http://localhost:8000/health
+
+### Get Analytics Simple
+GET http://localhost:8000/analytics/stats

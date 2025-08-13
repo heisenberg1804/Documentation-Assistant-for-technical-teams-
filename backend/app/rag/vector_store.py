@@ -14,22 +14,42 @@ class VectorStore:
         self.persist_directory = persist_directory or config.chroma_persist_dir
         
         # Ensure directory exists
-        os.makedirs(self.persist_directory, exist_ok=True)
-        self.logger.debug(f"Ensuring vector store directory exists: {self.persist_directory}")
+        try:
+            os.makedirs(self.persist_directory, exist_ok=True)
+            self.logger.debug(f"Ensuring vector store directory exists: {self.persist_directory}")
+        except Exception as e:
+            self.logger.error(f"Error creating persist directory: {e}")
+            raise RuntimeError(f"Failed to create ChromaDB persist directory: {e}")
         
         # Initialize ChromaDB client
-        self.logger.info("Initializing ChromaDB client")
-        self.client = chromadb.PersistentClient(
-            path=self.persist_directory,
-            settings=Settings(
-                anonymized_telemetry=False
+        try:
+            self.logger.info("Initializing ChromaDB client")
+            self.client = chromadb.PersistentClient(
+                path=self.persist_directory,
+                settings=Settings(
+                    anonymized_telemetry=False
+                )
             )
-        )
-        self.logger.info("ChromaDB client initialized successfully")
+            # Verify connection
+            self.client.heartbeat()
+            self.logger.info("ChromaDB client initialized and verified successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize ChromaDB client: {e}")
+            raise RuntimeError(f"ChromaDB initialization failed: {e}")
         
         # Collections
         self._document_chunks = None
         self._validated_answers = None
+        
+        # Initialize collections
+        try:
+            # This will trigger the property to initialize the collections
+            _ = self.document_chunks
+            _ = self.validated_answers
+            self.logger.info("Collections initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Error initializing collections: {e}")
+            raise RuntimeError(f"Failed to initialize ChromaDB collections: {e}")
     
     @property
     def document_chunks(self):
@@ -153,6 +173,28 @@ class VectorStore:
     def get_collection_stats(self) -> Dict:
         """Get statistics about collections"""
         try:
+            # Check if collections are initialized
+            if self._document_chunks is None or self._validated_answers is None:
+                self.logger.warning("Collections not properly initialized")
+                return {
+                    "document_chunks_count": 0,
+                    "validated_answers_count": 0,
+                    "status": "not_initialized"
+                }
+
+            # Verify ChromaDB connection
+            try:
+                self.client.heartbeat()
+            except Exception as e:
+                self.logger.error(f"ChromaDB connection error: {e}")
+                return {
+                    "document_chunks_count": 0,
+                    "validated_answers_count": 0,
+                    "status": "connection_error",
+                    "error": str(e)
+                }
+
+            # Get collection statistics
             doc_count = self.document_chunks.count()
             val_count = self.validated_answers.count()
             self.logger.info(f"Collection stats - Documents: {doc_count}, Validated Answers: {val_count}")
@@ -170,7 +212,8 @@ class VectorStore:
             
             return {
                 "document_chunks_count": doc_count,
-                "validated_answers_count": val_count
+                "validated_answers_count": val_count,
+                "status": "ok"
             }
         except Exception as e:
             self.logger.error(f"Error getting collection stats: {e}")
