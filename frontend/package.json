@@ -2,6 +2,10 @@
   "name": "documentation-assistant-frontend",
   "version": "0.1.0",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/heisenberg1804/Documentation-Assistant-for-technical-teams-"
+  },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
