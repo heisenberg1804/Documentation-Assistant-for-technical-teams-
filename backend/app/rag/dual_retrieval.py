@@ -5,6 +5,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 import numpy as np
 from langchain_openai import OpenAIEmbeddings
+import json
 
 from app.config import config
 from app.rag.vector_store import get_vector_store
@@ -124,9 +125,9 @@ class DualRetrievalSystem:
         return None
     
     def _search_validated(self, 
-                         query_embedding: List[float],
-                         original_query: str,
-                         top_k: int) -> List[RetrievalResult]:
+                        query_embedding: List[float],
+                        original_query: str,
+                        top_k: int) -> List[RetrievalResult]:
         """Search validated answers collection"""
         
         try:
@@ -147,13 +148,28 @@ class DualRetrievalSystem:
                     confidence = min(1.0, confidence * 1.2)
                     logger.debug("Applied exact query match boost")
                 
+                # FIXED: Reconstruct validation_info from flat metadata
+                validation_info = {
+                    "approved_by": metadata.get('approved_by', 'unknown'),
+                    "approved_at": metadata.get('approved_at', ''),
+                    "feedback_received": metadata.get('feedback_received', '')
+                }
+                
+                # FIXED: Parse source_chunks from JSON
+                source_chunks = []
+                try:
+                    source_chunks_json = metadata.get('source_chunks_json', '[]')
+                    source_chunks = json.loads(source_chunks_json) if source_chunks_json else []
+                except (json.JSONDecodeError, TypeError):
+                    source_chunks = []
+                
                 retrieval_results.append(RetrievalResult(
                     content=metadata.get('content', ''),
                     source='validated',
                     confidence=confidence,
                     metadata=metadata,
-                    chunk_ids=metadata.get('source_chunks', []),
-                    validation_info=metadata.get('validator_info', {})
+                    chunk_ids=source_chunks,
+                    validation_info=validation_info
                 ))
             
             # Update usage count for retrieved validated answers
@@ -165,8 +181,7 @@ class DualRetrievalSystem:
             
         except Exception as e:
             logger.error(f"Error searching validated answers: {e}")
-            return []
-    
+            return []    
     def _search_rag(self, 
                    query_embedding: List[float],
                    top_k: int) -> List[RetrievalResult]:
@@ -298,19 +313,18 @@ class DualRetrievalSystem:
                 for q, a in zip(query_embedding, answer_embedding)
             ]
             
-            # Create metadata
+            # Create FLAT metadata (ChromaDB requirement)
             validation_id = self._hash_text(f"{query}{answer}{thread_id}")
             metadata = {
                 "id": validation_id,
                 "content": answer,
                 "original_query": query,
                 "thread_id": thread_id,
-                "validator_info": {
-                    "approved_by": "thread_user",
-                    "approved_at": datetime.now().isoformat(),
-                    "feedback_received": feedback
-                },
-                "source_chunks": source_chunks,
+                # FIXED: Flatten validator_info fields
+                "approved_by": "thread_user",
+                "approved_at": datetime.now().isoformat(),
+                "feedback_received": feedback or "",
+                "source_chunks_json": json.dumps(source_chunks),  # Serialize list as JSON string
                 "confidence_score": 1.0,
                 "validation_count": 1,
                 "last_accessed": datetime.now().isoformat(),
@@ -333,8 +347,8 @@ class DualRetrievalSystem:
             logger.info(f"Added validated answer for query: {query[:50]}...")
             
         except Exception as e:
-            logger.error(f"Error adding validated answer: {e}")
-    
+            logger.error(f"Error adding validated answer: {e}")  
+          
     def _get_embedding(self, text: str) -> List[float]:
         """Get embedding with caching"""
         text_hash = self._hash_text(text)
