@@ -1,7 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
-from typing import Literal
-from typing import Literal
+from typing import Optional, List, Dict, Literal
 
 # --- Start Graph Run ---
 class StartRequest(BaseModel):
@@ -18,3 +16,16 @@ class GraphResponse(BaseModel):
     thread_id: str
     run_status: Literal["finished", "user_feedback", "pending"]
     assistant_response: Optional[str] = None
+
+# --- Document Upload Request ---
+class DocumentUploadResponse(BaseModel):
+    status: Literal["success", "error"]
+    filename: str
+    chunks_created: Optional[int] = None
+    error_message: Optional[str] = None
+
+# --- Document Status Response ---
+class DocumentStatusResponse(BaseModel):
+    total_chunks: int
+    total_validated: int
+    cache_stats: Dict[str, int]
