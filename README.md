@@ -28,7 +28,7 @@ An intelligent documentation Q&A system with human-in-the-loop validation, built
 ## 🏗️ Architecture
 
 Inline-style: 
-![alt text]("workflow")
+![alt text](https://github.com/heisenberg1804/Documentation-Assistant-for-technical-teams-/blob/main/mermaid-diagram-2025-08-13-195156.png "workflow")
 
 
 ### Core Components
