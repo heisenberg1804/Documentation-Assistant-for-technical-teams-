@@ -1,0 +1,25 @@
+# render.yaml - Fixed version for Render deployment
+services:
+  - type: web
+    name: ai-docs-assistant-backend
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false  # Set this in Render dashboard
+      - key: CHROMA_PERSIST_DIR
+        value: /opt/render/project/src/chroma_data
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CONFIDENCE_THRESHOLD
+        value: "0.85"
+      - key: CHUNK_SIZE
+        value: "512"
+      - key: CACHE_TTL_HOURS
+        value: "24"
+    # Note: Persistent disks are not available on the free tier
+    # ChromaDB will use the ephemeral filesystem
