@@ -10,7 +10,6 @@ langchain_core
 langchain_community
 python-dotenv
 sse-starlette
-json
 python-multipart
 
 # RAG dependencies (Day 1 additions)
