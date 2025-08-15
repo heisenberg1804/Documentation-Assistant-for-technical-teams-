@@ -7,6 +7,8 @@ An intelligent documentation Q&A system with human-in-the-loop validation, built
 ![React](https://img.shields.io/badge/react-18.0+-cyan.svg)
 ![License](https://img.shields.io/badge/license-MIT-purple.svg)
 
+url: https://documentation-assistant-for-technical-teams-26ed5y4vd.vercel.app/
+
 ## ✨ Key Features
 
 ### 🔄 Human-in-the-Loop Workflow
