@@ -1,7 +1,8 @@
 // AssistantService.js
 // Enhanced service for assistant session/conversation API calls with RAG support
 
-const BASE_URL = "http://localhost:8000";
+// FIXED: Use environment variable instead of hardcoded localhost
+const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
 export default class AssistantService {
   // Original blocking API methods (unchanged)
@@ -12,7 +13,7 @@ export default class AssistantService {
         headers: { 
           "Content-Type": "application/json",
           "Accept": "application/json",
-          "Origin": "http://localhost:3000"
+          "Origin": window.location.origin
         },
         credentials: "include",
         body: JSON.stringify({ human_request })
@@ -48,7 +49,7 @@ export default class AssistantService {
         headers: { 
           "Content-Type": "application/json",
           "Accept": "application/json",
-          "Origin": "http://localhost:3000"
+          "Origin": window.location.origin
         },
         credentials: "include",
         body: JSON.stringify({ human_request })
