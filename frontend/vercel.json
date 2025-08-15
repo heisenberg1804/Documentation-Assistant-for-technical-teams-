@@ -23,37 +23,11 @@
     }
   ],
   "env": {
-    "REACT_APP_API_URL": "@api_url"
+    "REACT_APP_API_URL": "https://documentation-assistant-for-technical.onrender.com"
   },
   "build": {
     "env": {
-      "REACT_APP_API_URL": "@api_url"
+      "REACT_APP_API_URL": "https://documentation-assistant-for-technical.onrender.com"
     }
-  },
-  "functions": {},
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        {
-          "key": "X-Frame-Options",
-          "value": "DENY"
-        },
-        {
-          "key": "X-Content-Type-Options",
-          "value": "nosniff"
-        },
-        {
-          "key": "Referrer-Policy",
-          "value": "origin-when-cross-origin"
-        }
-      ]
-    }
-  ],
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-  ]
+  }
 }
