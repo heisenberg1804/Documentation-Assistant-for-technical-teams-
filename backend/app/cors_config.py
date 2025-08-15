@@ -1,3 +1,4 @@
+# backend/app/cors_config.py - Fix with actual Vercel URL
 from fastapi.middleware.cors import CORSMiddleware
 
 def add_cors_middleware(app):
@@ -5,8 +6,8 @@ def add_cors_middleware(app):
         CORSMiddleware,
         allow_origins=[
             "http://localhost:3000",  # Local development
-            "https://documentation-assistant-chnic.vercel.app",  # Your Vercel domain
-            "https://*.vercel.app",  # All Vercel preview deployments
+            "https://documentation-assistant-for-technical-teams-6ie5jyosq.vercel.app",  # Your actual Vercel URL
+            "https://*.vercel.app",  # All Vercel deployments
         ],
         allow_credentials=True,
         allow_methods=["*"],

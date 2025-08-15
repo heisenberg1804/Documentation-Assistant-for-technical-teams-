@@ -10,6 +10,14 @@
       }
     }
   ],
+  "env": {
+    "REACT_APP_API_URL": "https://documentation-assistant-for-technical.onrender.com"
+  },
+  "build": {
+    "env": {
+      "REACT_APP_API_URL": "https://documentation-assistant-for-technical.onrender.com"
+    }
+  },
   "routes": [
     {
       "src": "/static/(.*)",
@@ -21,13 +29,5 @@
       "src": "/(.*)",
       "dest": "/index.html"
     }
-  ],
-  "env": {
-    "REACT_APP_API_URL": "https://documentation-assistant-for-technical.onrender.com"
-  },
-  "build": {
-    "env": {
-      "REACT_APP_API_URL": "https://documentation-assistant-for-technical.onrender.com"
-    }
-  }
+  ]
 }
