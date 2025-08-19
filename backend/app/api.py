@@ -107,18 +107,18 @@ async def stream_graph(request: Request, thread_id: str):
                 current_node = metadata.get('langgraph_node')
                 if current_node:
                     nodes_executed.append(current_node)
-                    #logger.info(f"📡 STREAMING: Node executed: {current_node}")
+                    logger.info(f"📡 STREAMING: Node executed: {current_node}")
                 
                 # FIXED: Check for sources after retrieve_context AND when starting assistant_draft
                 if not sources_sent and current_node in ['retrieve_context', 'assistant_draft']:
-                    #logger.info(f"📡 STREAMING: Checking for sources after {current_node}...")
+                    logger.info(f"📡 STREAMING: Checking for sources after {current_node}...")
                     
                     try:
                         state = graph.get_state(config)
                         rag_sources = state.values.get('rag_sources', [])
                         retrieval_confidence = state.values.get('retrieval_confidence', 0.0)
                         
-                        #logger.info(f"📡 STREAMING: State check - sources: {len(rag_sources)}, confidence: {retrieval_confidence}")
+                        logger.info(f"📡 STREAMING: State check - sources: {len(rag_sources)}, confidence: {retrieval_confidence}")
                         
                         if rag_sources and len(rag_sources) > 0:
                             # Sources are already formatted by retrieve_context
@@ -151,10 +151,10 @@ async def stream_graph(request: Request, thread_id: str):
                             yield {"event": "sources", "data": sources_data}
                             sources_sent = True
                         else:
-                            #logger.warning(f"📡 STREAMING: No sources found in state after {current_node}")
+                            logger.warning(f"📡 STREAMING: No sources found in state after {current_node}")
                             # Log state for debugging
                             all_keys = list(state.values.keys())
-                            #logger.warning(f"📡 STREAMING: Available state keys: {all_keys}")
+                            logger.warning(f"📡 STREAMING: Available state keys: {all_keys}")
                             
                     except Exception as e:
                         logger.error(f"📡 STREAMING: Error checking state for sources: {e}")
