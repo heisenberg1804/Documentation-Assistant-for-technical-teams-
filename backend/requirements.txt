@@ -10,6 +10,7 @@ langchain_core
 langchain_community
 python-dotenv
 sse-starlette
+python-multipart
 
 # RAG dependencies (Day 1 additions)
 chromadb>=0.4.15

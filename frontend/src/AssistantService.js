@@ -1,7 +1,8 @@
 // AssistantService.js
 // Enhanced service for assistant session/conversation API calls with full RAG support
 
-const BASE_URL = "http://localhost:8000";
+// FIXED: Use environment variable instead of hardcoded localhost
+const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
 export default class AssistantService {
   // Original blocking API methods (unchanged)
@@ -11,10 +12,9 @@ export default class AssistantService {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
-          "Accept": "application/json",
-          "Origin": "http://localhost:3000"
+          "Accept": "application/json"
         },
-        credentials: "include",
+        // REMOVED: credentials: "include"
         body: JSON.stringify({ human_request })
       });
       if (!response.ok) {
@@ -47,10 +47,9 @@ export default class AssistantService {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
-          "Accept": "application/json",
-          "Origin": "http://localhost:3000"
+          "Accept": "application/json"
         },
-        credentials: "include",
+        // REMOVED: credentials: "include"
         body: JSON.stringify({ human_request })
       });
       if (!response.ok) {
@@ -78,9 +77,8 @@ export default class AssistantService {
 
   static streamResponse(thread_id, onMessageCallback, onErrorCallback, onCompleteCallback) {
     // Create a new EventSource connection to the streaming endpoint
-    const eventSource = new EventSource(`${BASE_URL}/graph/stream/${thread_id}`, {
-      withCredentials: true
-    });
+    // REMOVED: withCredentials: true
+    const eventSource = new EventSource(`${BASE_URL}/graph/stream/${thread_id}`);
     
     // Enhanced connection monitoring
     let isConnected = true;
@@ -227,7 +225,7 @@ export default class AssistantService {
       
       const response = await fetch(`${BASE_URL}/documents/upload`, {
         method: "POST",
-        credentials: "include",
+        // REMOVED: credentials: "include"
         body: formData
       });
 
@@ -274,8 +272,8 @@ export default class AssistantService {
     try {
       const response = await fetch(`${BASE_URL}/documents/status`, {
         method: "GET",
-        headers: { "Accept": "application/json" },
-        credentials: "include"
+        headers: { "Accept": "application/json" }
+        // REMOVED: credentials: "include"
       });
 
       if (!response.ok) {
@@ -324,7 +322,7 @@ export default class AssistantService {
           "Content-Type": "application/json",
           "Accept": "application/json"
         },
-        credentials: "include",
+        // REMOVED: credentials: "include"
         body: JSON.stringify({ query, top_k: topK })
       });
 
@@ -361,8 +359,8 @@ export default class AssistantService {
     try {
       const response = await fetch(`${BASE_URL}/health`, {
         method: "GET",
-        headers: { "Accept": "application/json" },
-        credentials: "include"
+        headers: { "Accept": "application/json" }
+        // REMOVED: credentials: "include"
       });
 
       if (!response.ok) {
@@ -408,8 +406,8 @@ export default class AssistantService {
     try {
       const response = await fetch(`${BASE_URL}/analytics/stats`, {
         method: "GET",
-        headers: { "Accept": "application/json" },
-        credentials: "include"
+        headers: { "Accept": "application/json" }
+        // REMOVED: credentials: "include"
       });
 
       if (!response.ok) {
@@ -518,8 +516,8 @@ export default class AssistantService {
     try {
       const response = await fetch(`${BASE_URL}/cache/clear`, {
         method: "POST",
-        headers: { "Accept": "application/json" },
-        credentials: "include"
+        headers: { "Accept": "application/json" }
+        // REMOVED: credentials: "include"
       });
 
       if (!response.ok) {

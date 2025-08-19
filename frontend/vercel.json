@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "name": "ai-docs-assistant-frontend",
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "build"
+      }
+    }
+  ],
+  "env": {
+    "REACT_APP_API_URL": "https://documentation-assistant-for-technical.onrender.com"
+  },
+  "build": {
+    "env": {
+      "REACT_APP_API_URL": "https://documentation-assistant-for-technical.onrender.com"
+    }
+  },
+  "routes": [
+    {
+      "src": "/static/(.*)",
+      "headers": {
+        "cache-control": "public, max-age=31536000, immutable"
+      }
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
+}
