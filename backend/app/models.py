@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Literal, Union
+from typing import Any, Optional, List, Dict, Literal, Union
 
 # --- Start Graph Run ---
 class StartRequest(BaseModel):
@@ -28,4 +28,4 @@ class DocumentUploadResponse(BaseModel):
 class DocumentStatusResponse(BaseModel):
     total_chunks: int
     total_validated: int
-    cache_stats: Dict[str, Union[int, float]]
+    cache_stats: Dict[str, Any]

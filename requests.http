@@ -44,3 +44,22 @@ GET http://localhost:8000/health
 
 ### Get Analytics Simple
 GET http://localhost:8000/analytics/stats
+
+###
+GET http://localhost:8000/analytics/validation
+
+###
+curl -X POST http://localhost:8000/debug/test-retrieval \
+  -H "Content-Type: application/json" \
+  -d '{"query": "FastAPI"}'
+
+###
+curl -X POST http://localhost:8000/debug/run-retrieve-context \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How do I set up PhotoSphere?"}'
+
+###
+curl GET http://localhost:8000/debug/sources/
+
+###
+GET http://localhost:8000/debug/sources/081e91d7-4022-483e-981c-170855930fc7
