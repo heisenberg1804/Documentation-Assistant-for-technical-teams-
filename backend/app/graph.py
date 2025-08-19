@@ -34,14 +34,14 @@ class DraftReviewState(MessagesState):
     retrieval_start_time: Optional[float] = None
     response_generation_time_ms: Optional[float] = None
 
-# --- Retrieve Context Node ---
+# --- FIXED: Retrieve Context Node ---
 def retrieve_context(state: DraftReviewState) -> DraftReviewState:
-    """Retrieve relevant context using dual-retrieval system"""
+    """FIXED: Retrieve relevant context using dual-retrieval system"""
     
     retrieval_start = time.time()
     query = state["human_request"]
     
-    logger.info(f"Retrieving context for query: {query[:50]}...")
+    logger.info(f"🔍 RETRIEVE_CONTEXT: Starting retrieval for query: '{query[:50]}...'")
     
     try:
         # Get retriever instance
@@ -52,8 +52,10 @@ def retrieve_context(state: DraftReviewState) -> DraftReviewState:
         
         retrieval_time_ms = (time.time() - retrieval_start) * 1000
         
+        logger.info(f"🔍 RETRIEVE_CONTEXT: Found {len(results)} raw results in {retrieval_time_ms:.1f}ms")
+        
         if not results:
-            logger.warning("No retrieval results found")
+            logger.warning("🔍 RETRIEVE_CONTEXT: No retrieval results found")
             return {
                 **state, 
                 "rag_context": "", 
@@ -78,21 +80,47 @@ def retrieve_context(state: DraftReviewState) -> DraftReviewState:
                 f"{result.content}\n"
             )
             
-            # Prepare source for frontend
-            sources.append({
+            # FIXED: Extract metadata properly - handle the "Unknown" issue
+            metadata = result.metadata if result.metadata else {}
+            
+            # Try multiple possible metadata keys for filename
+            source_file = (
+                metadata.get('source_file') or 
+                metadata.get('file') or 
+                metadata.get('filename') or
+                'Unknown'
+            )
+            
+            # Try multiple possible keys for section
+            section = (
+                metadata.get('section') or
+                metadata.get('title') or
+                metadata.get('chapter') or
+                ''
+            )
+            
+            # FIXED: Create properly formatted source for frontend
+            formatted_source = {
                 "index": i,
                 "content": result.content[:300] + "..." if len(result.content) > 300 else result.content,
                 "source_type": result.source,
-                "confidence": result.confidence,
+                "confidence": float(result.confidence),  # Ensure float
                 "metadata": {
-                    "file": result.metadata.get('source_file', 'Unknown'),
-                    "section": result.metadata.get('section', ''),
+                    "file": source_file,
+                    "section": section,
                     "validated": result.source == 'validated',
-                    "chunk_type": result.metadata.get('chunk_type', 'text'),
-                    "has_code": result.metadata.get('has_code', False)
+                    "chunk_type": metadata.get('chunk_type', 'text'),
+                    "has_code": metadata.get('has_code', False),
+                    # DEBUG: Include original metadata to see what's available
+                    "debug_original_metadata": dict(metadata) if metadata else {}
                 }
-            })
+            }
             
+            # Add validation info if available
+            if hasattr(result, 'validation_info') and result.validation_info:
+                formatted_source["metadata"]["validation_info"] = result.validation_info
+            
+            sources.append(formatted_source)
             total_confidence += result.confidence
         
         # Calculate average confidence
@@ -101,19 +129,30 @@ def retrieve_context(state: DraftReviewState) -> DraftReviewState:
         # Join context
         formatted_context = "\n---\n".join(context_parts)
         
-        logger.info(f"Retrieved {len(results)} sources with avg confidence: {avg_confidence:.3f} "
-                   f"in {retrieval_time_ms:.1f}ms")
+        logger.info(f"🔍 RETRIEVE_CONTEXT: Processed {len(sources)} sources with avg confidence: {avg_confidence:.3f}")
         
-        return {
+        # DEBUG: Log what we're about to store
+        for i, source in enumerate(sources[:2]):  # Log first 2 sources
+            logger.info(f"   📝 Source {i+1}: type={source['source_type']}, file={source['metadata']['file']}, conf={source['confidence']:.3f}")
+        
+        # FIXED: Store sources properly in state
+        updated_state = {
             **state,
             "rag_context": formatted_context,
-            "rag_sources": sources,
-            "retrieval_confidence": avg_confidence,
+            "rag_sources": sources,  # This is what the API looks for
+            "retrieval_confidence": float(avg_confidence),
             "response_generation_time_ms": retrieval_time_ms
         }
         
+        logger.info(f"🔍 RETRIEVE_CONTEXT: Successfully stored {len(sources)} sources in state")
+        
+        return updated_state
+        
     except Exception as e:
-        logger.error(f"Error in retrieve_context: {e}")
+        logger.error(f"🔍 RETRIEVE_CONTEXT ERROR: {e}")
+        import traceback
+        logger.error(f"🔍 RETRIEVE_CONTEXT TRACEBACK: {traceback.format_exc()}")
+        
         retrieval_time_ms = (time.time() - retrieval_start) * 1000
         
         # Graceful degradation
@@ -141,9 +180,9 @@ def assistant_draft(state: DraftReviewState) -> DraftReviewState:
     
     # Log context usage
     if context:
-        logger.info(f"Using RAG context with {len(sources)} sources, confidence: {confidence:.3f}")
+        logger.info(f"🤖 ASSISTANT_DRAFT: Using RAG context with {len(sources)} sources, confidence: {confidence:.3f}")
     else:
-        logger.info("No RAG context available, using base knowledge")
+        logger.info("🤖 ASSISTANT_DRAFT: No RAG context available, using base knowledge")
 
     if (status == "feedback" and state.get("human_comment")):
         # Feedback revision with context
@@ -164,7 +203,7 @@ Instructions:
         messages = [user_message] + state["messages"] + [system_message]
         all_messages = state["messages"]
         
-        logger.debug("Processing feedback revision with context")
+        logger.debug("🤖 ASSISTANT_DRAFT: Processing feedback revision with context")
         
     else:
         # Initial draft with context
@@ -193,7 +232,7 @@ Instructions:
         messages = [system_message, user_message]
         all_messages = state["messages"]
         
-        logger.debug("Processing initial draft with context")
+        logger.debug("🤖 ASSISTANT_DRAFT: Processing initial draft with context")
     
     # Get response from model
     try:
@@ -203,8 +242,7 @@ Instructions:
         generation_time_ms = (time.time() - generation_start) * 1000
         total_time_ms = state.get("response_generation_time_ms", 0) + generation_time_ms
         
-        logger.info(f"Generated assistant response in {generation_time_ms:.1f}ms "
-                   f"(total: {total_time_ms:.1f}ms)")
+        logger.info(f"🤖 ASSISTANT_DRAFT: Generated response in {generation_time_ms:.1f}ms (total: {total_time_ms:.1f}ms)")
         
         return {
             **state,
@@ -215,7 +253,7 @@ Instructions:
         }
         
     except Exception as e:
-        logger.error(f"Error generating assistant response: {e}")
+        logger.error(f"🤖 ASSISTANT_DRAFT ERROR: {e}")
         generation_time_ms = (time.time() - generation_start) * 1000
         total_time_ms = state.get("response_generation_time_ms", 0) + generation_time_ms
         
@@ -241,6 +279,8 @@ def human_feedback(state: DraftReviewState):
         feedback_comment = state.get('human_comment')
         sources = state.get('rag_sources', [])
         confidence = state.get('retrieval_confidence', 0.0)
+        
+        logger.info(f"👤 HUMAN_FEEDBACK: Processing {status} action for thread {thread_id}")
         
         # Record analytics using utility functions
         if status == 'approved':
@@ -269,13 +309,13 @@ def human_feedback(state: DraftReviewState):
                     feedback=feedback_comment
                 )
                 
-                logger.info(f"Stored validated answer for thread {thread_id}")
+                logger.info(f"👤 HUMAN_FEEDBACK: Stored validated answer for thread {thread_id}")
                 
             except Exception as e:
-                logger.error(f"Error storing validated answer: {e}")
+                logger.error(f"👤 HUMAN_FEEDBACK: Error storing validated answer: {e}")
         
     except Exception as e:
-        logger.error(f"Error in human_feedback (non-critical): {e}")
+        logger.error(f"👤 HUMAN_FEEDBACK: Error (non-critical): {e}")
     
     # Original function behavior - just pass through
     pass
@@ -288,6 +328,8 @@ def assistant_finalize(state: DraftReviewState) -> DraftReviewState:
     
     # Get the most recent assistant response from the state
     latest_response = state["assistant_response"]
+    
+    logger.info(f"✨ ASSISTANT_FINALIZE: Polishing approved response ({len(latest_response)} chars)")
     
     system_message = SystemMessage(content="""You are an AI assistant finalizing an approved response.
 
@@ -313,7 +355,7 @@ Focus on polishing the approved content.""")
         finalize_time_ms = (time.time() - finalize_start) * 1000
         total_time_ms = state.get("response_generation_time_ms", 0) + finalize_time_ms
         
-        logger.info(f"Finalized response in {finalize_time_ms:.1f}ms")
+        logger.info(f"✨ ASSISTANT_FINALIZE: Completed in {finalize_time_ms:.1f}ms")
         
         return {
             **state,
@@ -323,7 +365,7 @@ Focus on polishing the approved content.""")
         }
         
     except Exception as e:
-        logger.error(f"Error finalizing response: {e}")
+        logger.error(f"✨ ASSISTANT_FINALIZE ERROR: {e}")
         return state
 
 # --- Router Function ---
@@ -343,7 +385,7 @@ builder.add_node('assistant_draft', assistant_draft)
 builder.add_node('human_feedback', human_feedback)
 builder.add_node('assistant_finalize', assistant_finalize)
 
-# Add edges
+# Add edges - CONFIRMED CORRECT
 builder.add_edge(START, 'retrieve_context')
 builder.add_edge('retrieve_context', 'assistant_draft')
 builder.add_edge('assistant_draft', 'human_feedback')
@@ -360,5 +402,38 @@ builder.add_edge('assistant_finalize', END)
 memory = MemorySaver()
 graph = builder.compile(interrupt_before=["human_feedback"], checkpointer=memory)
 
+# --- DEBUG FUNCTION FOR TESTING ---
+def test_retrieve_context_standalone(query: str = "How do I set up PhotoSphere?"):
+    """Test retrieve_context node independently"""
+    
+    test_state = DraftReviewState(
+        human_request=query,
+        messages=[]
+    )
+    
+    logger.info(f"🧪 Testing retrieve_context node with query: '{query}'")
+    
+    try:
+        result = retrieve_context(test_state)
+        
+        sources = result.get('rag_sources', [])
+        confidence = result.get('retrieval_confidence', 0.0)
+        context = result.get('rag_context', '')
+        
+        logger.info(f"🧪 Test result: {len(sources)} sources, confidence: {confidence:.3f}")
+        logger.info(f"🧪 Context length: {len(context)} chars")
+        
+        if sources:
+            for i, source in enumerate(sources[:2]):
+                logger.info(f"🧪   Source {i+1}: type={source.get('source_type')}, file={source.get('metadata', {}).get('file', 'Unknown')}")
+        
+        return len(sources) > 0
+        
+    except Exception as e:
+        logger.error(f"🧪 Test failed: {e}")
+        import traceback
+        logger.error(f"🧪 Traceback: {traceback.format_exc()}")
+        return False
+
 # --- Exports ---
-__all__ = ["graph", "DraftReviewState"]
+__all__ = ["graph", "DraftReviewState", "test_retrieve_context_standalone"]

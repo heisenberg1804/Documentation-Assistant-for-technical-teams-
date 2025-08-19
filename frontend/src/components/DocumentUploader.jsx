@@ -1,10 +1,11 @@
 import React, { useState, useRef } from 'react';
 import AssistantService from '../AssistantService';
 
-const DocumentUploader = ({ onUploadComplete, onClose }) => {
+const DocumentUploader = ({ onUploadComplete, onClose, currentStats = {} }) => {
   const [uploadStatus, setUploadStatus] = useState('idle'); // idle, uploading, success, error
   const [uploadMessage, setUploadMessage] = useState('');
   const [dragActive, setDragActive] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
   const fileInputRef = useRef(null);
   const [uploadedFiles, setUploadedFiles] = useState([]);
 
@@ -12,6 +13,7 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
     const fileArray = Array.from(files);
     const supportedTypes = ['md', 'pdf', 'txt'];
     
+    // Validate files
     const validFiles = fileArray.filter(file => {
       const extension = file.name.split('.').pop().toLowerCase();
       return supportedTypes.includes(extension);
@@ -24,40 +26,47 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
     }
 
     if (validFiles.length !== fileArray.length) {
-      setUploadMessage(`${fileArray.length - validFiles.length} unsupported files ignored.`);
+      const ignoredCount = fileArray.length - validFiles.length;
+      setUploadMessage(`${ignoredCount} unsupported file(s) ignored. Processing ${validFiles.length} valid files...`);
     }
 
     setUploadStatus('uploading');
     setUploadMessage(`Uploading ${validFiles.length} file(s)...`);
+    setUploadProgress({ current: 0, total: validFiles.length });
 
-    const results = [];
-    for (const file of validFiles) {
-      try {
-        const result = await AssistantService.uploadDocument(file);
-        results.push({ file: file.name, ...result });
-      } catch (error) {
-        results.push({ 
-          file: file.name, 
-          status: 'error', 
-          error_message: error.message 
-        });
+    // Use batch upload for better progress tracking
+    try {
+      const results = await AssistantService.batchUploadDocuments(
+        validFiles,
+        (progress) => {
+          setUploadProgress(progress);
+          if (progress.status === 'uploading') {
+            setUploadMessage(`Processing ${progress.currentFile}... (${progress.current}/${progress.total})`);
+          }
+        }
+      );
+
+      setUploadedFiles(results);
+      
+      const successCount = results.filter(r => r.status === 'success').length;
+      const totalChunks = results.reduce((sum, r) => sum + (r.chunks_created || 0), 0);
+
+      if (successCount === results.length) {
+        setUploadStatus('success');
+        setUploadMessage(`✅ Successfully uploaded ${successCount} files (${totalChunks} chunks created)`);
+      } else {
+        setUploadStatus('error');
+        setUploadMessage(`⚠️ ${successCount}/${results.length} files uploaded successfully`);
       }
-    }
 
-    setUploadedFiles(results);
-    const successCount = results.filter(r => r.status === 'success').length;
-    const totalChunks = results.reduce((sum, r) => sum + (r.chunks_created || 0), 0);
+      if (onUploadComplete) {
+        onUploadComplete(results);
+      }
 
-    if (successCount === results.length) {
-      setUploadStatus('success');
-      setUploadMessage(`✅ Successfully uploaded ${successCount} files (${totalChunks} chunks created)`);
-    } else {
+    } catch (error) {
       setUploadStatus('error');
-      setUploadMessage(`⚠️ ${successCount}/${results.length} files uploaded successfully`);
-    }
-
-    if (onUploadComplete) {
-      onUploadComplete(results);
+      setUploadMessage(`Upload failed: ${error.message}`);
+      setUploadedFiles([]);
     }
   };
 
@@ -90,6 +99,16 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
   const openFileDialog = () => {
     if (fileInputRef.current) {
       fileInputRef.current.click();
+    }
+  };
+
+  const resetUpload = () => {
+    setUploadStatus('idle');
+    setUploadMessage('');
+    setUploadedFiles([]);
+    setUploadProgress({ current: 0, total: 0 });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
@@ -139,6 +158,25 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
           </button>
         </div>
 
+        {/* Current Knowledge Base Status */}
+        {currentStats.total_chunks > 0 && (
+          <div style={{
+            marginBottom: 16,
+            padding: 12,
+            backgroundColor: '#f0f7ff',
+            border: '1px solid #c2d8f2',
+            borderRadius: 6,
+            fontSize: 14
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 4, color: '#1976d2' }}>
+              📊 Current Knowledge Base
+            </div>
+            <div style={{ color: '#666' }}>
+              📄 {currentStats.total_chunks} chunks • ✅ {currentStats.total_validated} validated
+            </div>
+          </div>
+        )}
+
         {/* Upload Area */}
         <div
           style={{
@@ -148,18 +186,25 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
             textAlign: 'center',
             backgroundColor: dragActive ? '#f0f7ff' : '#fafafa',
             marginBottom: 16,
-            cursor: 'pointer',
-            transition: 'all 0.2s ease'
+            cursor: uploadStatus === 'uploading' ? 'not-allowed' : 'pointer',
+            transition: 'all 0.2s ease',
+            opacity: uploadStatus === 'uploading' ? 0.7 : 1
           }}
-          onClick={openFileDialog}
-          onDragEnter={handleDrag}
-          onDragLeave={handleDrag}
-          onDragOver={handleDrag}
-          onDrop={handleDrop}
+          onClick={uploadStatus !== 'uploading' ? openFileDialog : undefined}
+          onDragEnter={uploadStatus !== 'uploading' ? handleDrag : undefined}
+          onDragLeave={uploadStatus !== 'uploading' ? handleDrag : undefined}
+          onDragOver={uploadStatus !== 'uploading' ? handleDrag : undefined}
+          onDrop={uploadStatus !== 'uploading' ? handleDrop : undefined}
         >
-          <div style={{ fontSize: 48, marginBottom: 16 }}>📄</div>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>
+            {uploadStatus === 'uploading' ? '⏳' : '📄'}
+          </div>
           <div style={{ fontSize: 16, marginBottom: 8, fontWeight: 600 }}>
-            {dragActive ? 'Drop files here' : 'Click to select or drag files here'}
+            {uploadStatus === 'uploading' ? 
+              'Processing files...' :
+              dragActive ? 'Drop files here' : 
+              'Click to select or drag files here'
+            }
           </div>
           <div style={{ fontSize: 14, color: '#666' }}>
             Supported: .md, .pdf, .txt files
@@ -172,8 +217,40 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
             accept=".md,.pdf,.txt"
             onChange={handleFileInput}
             style={{ display: 'none' }}
+            disabled={uploadStatus === 'uploading'}
           />
         </div>
+
+        {/* Upload Progress Bar */}
+        {uploadStatus === 'uploading' && uploadProgress.total > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 4,
+              fontSize: 12,
+              color: '#666'
+            }}>
+              <span>Progress: {uploadProgress.current}/{uploadProgress.total}</span>
+              <span>{Math.round((uploadProgress.current / uploadProgress.total) * 100)}%</span>
+            </div>
+            <div style={{
+              width: '100%',
+              height: 6,
+              backgroundColor: '#e0e0e0',
+              borderRadius: 3,
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                width: `${(uploadProgress.current / uploadProgress.total) * 100}%`,
+                height: '100%',
+                backgroundColor: '#1976d2',
+                transition: 'width 0.3s ease'
+              }} />
+            </div>
+          </div>
+        )}
 
         {/* Status Message */}
         {uploadMessage && (
@@ -192,33 +269,7 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
           </div>
         )}
 
-        {/* Upload Progress */}
-        {uploadStatus === 'uploading' && (
-          <div style={{ marginBottom: 16 }}>
-            <div style={{
-              width: '100%',
-              height: 4,
-              backgroundColor: '#e0e0e0',
-              borderRadius: 2,
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                width: '100%',
-                height: '100%',
-                backgroundColor: '#1976d2',
-                animation: 'progress 1.5s ease-in-out infinite'
-              }} />
-            </div>
-            <style>{`
-              @keyframes progress {
-                0% { transform: translateX(-100%); }
-                100% { transform: translateX(100%); }
-              }
-            `}</style>
-          </div>
-        )}
-
-        {/* Results List */}
+        {/* Results List with Enhanced Details */}
         {uploadedFiles.length > 0 && (
           <div style={{ marginBottom: 16 }}>
             <h4 style={{ margin: '0 0 12px 0', color: '#333' }}>Upload Results:</h4>
@@ -228,33 +279,103 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  padding: 8,
-                  marginBottom: 4,
+                  padding: 10,
+                  marginBottom: 6,
                   backgroundColor: result.status === 'success' ? '#f1f8e9' : '#ffebee',
+                  border: `1px solid ${result.status === 'success' ? '#c8e6c9' : '#ffcdd2'}`,
                   borderRadius: 4,
                   fontSize: 14
                 }}>
-                  <span style={{ fontWeight: 500 }}>{result.file}</span>
-                  <div style={{ textAlign: 'right' }}>
-                    <span style={{
-                      color: result.status === 'success' ? '#4caf50' : '#f44336',
-                      marginRight: 8
-                    }}>
-                      {result.status === 'success' ? '✅' : '❌'}
-                    </span>
-                    {result.chunks_created && (
-                      <span style={{ color: '#666', fontSize: 12 }}>
-                        {result.chunks_created} chunks
-                      </span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 500, marginBottom: 2 }}>
+                      {result.filename}
+                    </div>
+                    {result.file_size && (
+                      <div style={{ fontSize: 11, color: '#666' }}>
+                        {(result.file_size / 1024).toFixed(1)} KB
+                      </div>
                     )}
+                  </div>
+                  
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{
+                        color: result.status === 'success' ? '#4caf50' : '#f44336',
+                        fontSize: 16
+                      }}>
+                        {result.status === 'success' ? '✅' : '❌'}
+                      </span>
+                      
+                      {result.chunks_created > 0 && (
+                        <span style={{ 
+                          backgroundColor: '#4caf50',
+                          color: 'white',
+                          padding: '2px 6px',
+                          borderRadius: 10,
+                          fontSize: 10,
+                          fontWeight: 500
+                        }}>
+                          {result.chunks_created} chunks
+                        </span>
+                      )}
+                    </div>
+                    
                     {result.error_message && (
-                      <div style={{ color: '#f44336', fontSize: 11, marginTop: 2 }}>
+                      <div style={{ 
+                        color: '#f44336', 
+                        fontSize: 11, 
+                        marginTop: 2,
+                        maxWidth: 150,
+                        textAlign: 'right'
+                      }}>
                         {result.error_message}
                       </div>
                     )}
                   </div>
                 </div>
               ))}
+            </div>
+
+            {/* Upload Summary */}
+            {uploadStatus === 'success' && uploadedFiles.length > 0 && (
+              <div style={{
+                marginTop: 12,
+                padding: 10,
+                backgroundColor: '#e8f5e8',
+                border: '1px solid #4caf50',
+                borderRadius: 4,
+                fontSize: 13,
+                textAlign: 'center'
+              }}>
+                <div style={{ fontWeight: 600, color: '#2e7d32', marginBottom: 4 }}>
+                  🎉 Upload Complete!
+                </div>
+                <div style={{ color: '#388e3c' }}>
+                  Added {uploadedFiles.reduce((sum, f) => sum + (f.chunks_created || 0), 0)} new chunks 
+                  to your knowledge base
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* File Type Guide */}
+        {uploadStatus === 'idle' && (
+          <div style={{
+            padding: 12,
+            backgroundColor: '#f8f9fa',
+            border: '1px solid #e9ecef',
+            borderRadius: 4,
+            fontSize: 12,
+            marginBottom: 16
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 6, color: '#495057' }}>
+              📋 Supported File Types:
+            </div>
+            <div style={{ color: '#6c757d', lineHeight: 1.4 }}>
+              • <strong>.md</strong> - Markdown documentation<br/>
+              • <strong>.pdf</strong> - PDF documents<br/>
+              • <strong>.txt</strong> - Plain text files
             </div>
           </div>
         )}
@@ -268,30 +389,28 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
         }}>
           {uploadStatus === 'success' && (
             <button
-              onClick={() => {
-                setUploadStatus('idle');
-                setUploadMessage('');
-                setUploadedFiles([]);
-              }}
+              onClick={resetUpload}
               style={{
-                padding: '8px 16px',
+                padding: '10px 16px',
                 backgroundColor: '#1976d2',
                 color: 'white',
                 border: 'none',
                 borderRadius: 4,
                 cursor: 'pointer',
-                fontSize: 14
+                fontSize: 14,
+                fontWeight: 500
               }}
             >
               Upload More
             </button>
           )}
+          
           <button
             onClick={onClose}
             style={{
-              padding: '8px 16px',
+              padding: '10px 16px',
               backgroundColor: uploadStatus === 'uploading' ? '#ccc' : '#f5f5f5',
-              color: '#333',
+              color: uploadStatus === 'uploading' ? '#666' : '#333',
               border: '1px solid #ddd',
               borderRadius: 4,
               cursor: uploadStatus === 'uploading' ? 'not-allowed' : 'pointer',
@@ -302,6 +421,28 @@ const DocumentUploader = ({ onUploadComplete, onClose }) => {
             {uploadStatus === 'uploading' ? 'Uploading...' : 'Close'}
           </button>
         </div>
+
+        {/* Upload Tips */}
+        {uploadStatus === 'idle' && currentStats.total_chunks === 0 && (
+          <div style={{
+            marginTop: 20,
+            padding: 12,
+            backgroundColor: '#fff3e0',
+            border: '1px solid #ffcc02',
+            borderRadius: 4,
+            fontSize: 12
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 4, color: '#e65100' }}>
+              💡 Getting Started Tips:
+            </div>
+            <div style={{ color: '#bf360c', lineHeight: 1.4 }}>
+              • Start with README or overview documents<br/>
+              • Upload API documentation for technical queries<br/>
+              • Include setup/installation guides<br/>
+              • Add troubleshooting documentation
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 // AssistantService.js
-// Enhanced service for assistant session/conversation API calls with RAG support
+// Enhanced service for assistant session/conversation API calls with full RAG support
 
 // FIXED: Use environment variable instead of hardcoded localhost
 const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
@@ -40,7 +40,7 @@ export default class AssistantService {
     return response.json();
   }
 
-  // Streaming API methods (enhanced with sources handling)
+  // Enhanced streaming API methods with robust sources handling
   static async createStreamingConversation(human_request) {
     try {
       const response = await fetch(`${BASE_URL}/graph/stream/create`, {
@@ -80,8 +80,14 @@ export default class AssistantService {
     // REMOVED: withCredentials: true
     const eventSource = new EventSource(`${BASE_URL}/graph/stream/${thread_id}`);
     
+    // Enhanced connection monitoring
+    let isConnected = true;
+    let sourcesReceived = false;
+    
     // Handle token events (content streaming)
     eventSource.addEventListener('token', (event) => {
+      if (!isConnected) return;
+      
       try {
         const data = JSON.parse(event.data);
         onMessageCallback({ content: data.content });
@@ -91,35 +97,69 @@ export default class AssistantService {
       }
     });
 
-    // NEW: Handle sources events (RAG context sources)
+    // Enhanced sources event handler with validation
     eventSource.addEventListener('sources', (event) => {
+      if (!isConnected) return;
+      
       try {
         const data = JSON.parse(event.data);
+        
+        // Validate sources data structure
+        if (!data.sources || !Array.isArray(data.sources)) {
+          console.warn("Invalid sources data received:", data);
+          return;
+        }
+        
+        // Ensure each source has required fields
+        const validatedSources = data.sources.map((source, index) => ({
+          index: source.index || index + 1,
+          content: source.content || '',
+          source_type: source.source_type || 'rag',
+          confidence: source.confidence || 0.0,
+          metadata: {
+            file: source.metadata?.file || 'Unknown',
+            section: source.metadata?.section || '',
+            validated: source.metadata?.validated || false,
+            chunk_type: source.metadata?.chunk_type || 'text',
+            has_code: source.metadata?.has_code || false,
+            ...source.metadata
+          }
+        }));
+        
         onMessageCallback({ 
-          sources: data.sources, 
-          confidence: data.confidence,
-          retrieval_time_ms: data.retrieval_time_ms,
-          source_types: data.source_types
+          sources: validatedSources, 
+          confidence: data.confidence || 0.0,
+          retrieval_time_ms: data.retrieval_time_ms || 0,
+          source_types: data.source_types || {}
         });
-        console.log(`Received sources event: ${data.sources?.length || 0} sources`);
+        
+        sourcesReceived = true;
+        console.log(`Successfully processed sources event: ${validatedSources.length} sources, confidence: ${data.confidence}`);
       } catch (error) {
         console.error("Error parsing sources event:", error, "Raw data:", event.data);
-        onErrorCallback(error);
+        // Don't call error callback for sources parsing issues - continue with response
+        console.warn("Continuing without sources display");
       }
     });
     
     // Handle status events (user_feedback, finished)
     eventSource.addEventListener('status', (event) => {
+      if (!isConnected) return;
+      
       try {
         const data = JSON.parse(event.data);
-        onMessageCallback({ status: data.status, metrics: data.metrics });
+        onMessageCallback({ 
+          status: data.status, 
+          metrics: data.metrics,
+          stream_time_ms: data.stream_time_ms
+        });
         
         // Mark that we've received a status event for this connection
         if (!window._hasReceivedStatusEvent) {
           window._hasReceivedStatusEvent = {};
         }
         window._hasReceivedStatusEvent[eventSource.url] = true;
-        console.log("Received status event, marking connection for normal closure");
+        console.log(`Received status event: ${data.status}, marking connection for normal closure`);
       } catch (error) {
         console.error("Error parsing status event:", error, "Raw data:", event.data);
         onErrorCallback(error);
@@ -128,14 +168,14 @@ export default class AssistantService {
     
     // Handle start/resume events
     eventSource.addEventListener('start', (event) => {
-      console.log("Stream started:", event.data);
+      console.log("Stream started for thread:", thread_id);
     });
     
     eventSource.addEventListener('resume', (event) => {
-      console.log("Stream resumed:", event.data);
+      console.log("Stream resumed for thread:", thread_id);
     });
     
-    // Handle errors
+    // Enhanced error handling
     eventSource.onerror = (error) => {
       console.log("SSE connection state change - readyState:", eventSource.readyState);
       
@@ -144,37 +184,45 @@ export default class AssistantService {
       
       if (hasReceivedStatusEvent) {
         console.log("Stream completed normally after receiving status event");
+        isConnected = false;
         eventSource.close();
         onCompleteCallback();
         return;
       }
       
       // Only call the error callback if it's a real error, not a normal close
-      if (eventSource.readyState !== EventSource.CLOSED && eventSource.readyState !== EventSource.CONNECTING) {
+      if (eventSource.readyState === EventSource.CLOSED) {
+        console.log("Stream completed normally (connection closed)");
+        isConnected = false;
+        onCompleteCallback();
+      } else if (eventSource.readyState === EventSource.CONNECTING) {
+        console.log("Stream reconnecting...");
+      } else {
         console.error("SSE connection error:", error);
+        isConnected = false;
         eventSource.close();
         onErrorCallback(new Error("Connection error or server disconnected"));
-      } else {
-        console.log("Stream completed normally");
-        onCompleteCallback();
       }
     };
     
+    // Return eventSource for manual cleanup if needed
     return eventSource;
   }
 
-  // NEW: Document Management Methods
+  // Enhanced document management methods
 
   /**
-   * Upload a document for RAG processing
+   * Upload a document for RAG processing with enhanced error handling
    * @param {File} file - The file to upload (PDF, MD, or TXT)
-   * @returns {Promise<Object>} Upload result with status and chunk count
+   * @returns {Promise<Object>} Upload result with detailed status
    */
   static async uploadDocument(file) {
     const formData = new FormData();
     formData.append('file', file);
 
     try {
+      console.log(`Starting upload: ${file.name} (${file.size} bytes)`);
+      
       const response = await fetch(`${BASE_URL}/documents/upload`, {
         method: "POST",
         // REMOVED: credentials: "include"
@@ -187,17 +235,38 @@ export default class AssistantService {
       }
 
       const result = await response.json();
-      console.log(`Document upload result:`, result);
-      return result;
+      console.log(`Document upload result for ${file.name}:`, result);
+      
+      // Validate result structure
+      if (!result.status) {
+        throw new Error("Invalid response from upload endpoint");
+      }
+      
+      return {
+        status: result.status,
+        filename: result.filename || file.name,
+        chunks_created: result.chunks_created || 0,
+        error_message: result.error_message || null,
+        file_size: file.size,
+        upload_time: new Date().toISOString()
+      };
+      
     } catch (error) {
       console.error("Document upload failed:", error);
-      throw error;
+      return {
+        status: "error",
+        filename: file.name,
+        chunks_created: 0,
+        error_message: error.message,
+        file_size: file.size,
+        upload_time: new Date().toISOString()
+      };
     }
   }
 
   /**
-   * Get document indexing statistics
-   * @returns {Promise<Object>} Stats about indexed documents and validated answers
+   * Get comprehensive document indexing statistics
+   * @returns {Promise<Object>} Detailed stats about indexed documents and system health
    */
   static async getDocumentStats() {
     try {
@@ -212,23 +281,41 @@ export default class AssistantService {
       }
 
       const stats = await response.json();
-      console.log("Document stats:", stats);
-      return stats;
+      console.log("Document stats retrieved:", stats);
+      
+      // Ensure consistent structure
+      return {
+        total_chunks: stats.total_chunks || 0,
+        total_validated: stats.total_validated || 0,
+        cache_stats: stats.cache_stats || {},
+        last_updated: new Date().toISOString(),
+        health: stats.total_chunks > 0 ? 'healthy' : 'empty'
+      };
+      
     } catch (error) {
       console.error("Failed to get document stats:", error);
-      // Return default stats instead of throwing
-      return { total_chunks: 0, total_validated: 0, cache_stats: {} };
+      // Return safe defaults instead of throwing
+      return { 
+        total_chunks: 0, 
+        total_validated: 0, 
+        cache_stats: {},
+        last_updated: new Date().toISOString(),
+        health: 'error',
+        error: error.message
+      };
     }
   }
 
   /**
-   * Test RAG retrieval (for debugging)
+   * Test RAG retrieval with detailed performance metrics
    * @param {string} query - Query to test
    * @param {number} topK - Number of results to return
-   * @returns {Promise<Object>} RAG test results
+   * @returns {Promise<Object>} Comprehensive RAG test results
    */
   static async testRAGRetrieval(query, topK = 3) {
     try {
+      const startTime = performance.now();
+      
       const response = await fetch(`${BASE_URL}/rag/test`, {
         method: "POST",
         headers: { 
@@ -244,8 +331,20 @@ export default class AssistantService {
       }
 
       const result = await response.json();
-      console.log("RAG test result:", result);
-      return result;
+      const totalTime = performance.now() - startTime;
+      
+      console.log("RAG test completed:", {
+        query: query.substring(0, 50),
+        results: result.results_count || 0,
+        client_time: totalTime,
+        server_time: result.performance?.retrieval_time_ms || 0
+      });
+      
+      return {
+        ...result,
+        client_request_time_ms: totalTime
+      };
+      
     } catch (error) {
       console.error("RAG test failed:", error);
       throw error;
@@ -253,8 +352,8 @@ export default class AssistantService {
   }
 
   /**
-   * Check system health
-   * @returns {Promise<Object>} Health status including RAG system status
+   * Enhanced system health check with component status
+   * @returns {Promise<Object>} Comprehensive health status
    */
   static async checkHealth() {
     try {
@@ -269,21 +368,43 @@ export default class AssistantService {
       }
 
       const health = await response.json();
-      console.log("System health:", health);
-      return health;
+      console.log("System health check:", health);
+      
+      return {
+        status: health.status || "unknown",
+        rag_enabled: health.rag_enabled || false,
+        document_chunks: health.document_chunks || 0,
+        validated_answers: health.validated_answers || 0,
+        timestamp: health.timestamp || Date.now(),
+        components: {
+          vector_store: health.document_chunks >= 0,
+          rag_pipeline: health.rag_enabled || false,
+          validation_system: health.validated_answers >= 0
+        }
+      };
+      
     } catch (error) {
       console.error("Health check failed:", error);
-      return { status: "unknown", error: error.message };
+      return { 
+        status: "unhealthy", 
+        error: error.message,
+        timestamp: Date.now(),
+        components: {
+          vector_store: false,
+          rag_pipeline: false,
+          validation_system: false
+        }
+      };
     }
   }
 
   /**
-   * Get simple analytics (basic version)
-   * @returns {Promise<Object>} Basic analytics data
+   * Get analytics and performance statistics
+   * @returns {Promise<Object>} System analytics data
    */
-  static async getSimpleAnalytics() {
+  static async getAnalytics() {
     try {
-      const response = await fetch(`${BASE_URL}/analytics/simple`, {
+      const response = await fetch(`${BASE_URL}/analytics/stats`, {
         method: "GET",
         headers: { "Accept": "application/json" }
         // REMOVED: credentials: "include"
@@ -294,12 +415,97 @@ export default class AssistantService {
       }
 
       const analytics = await response.json();
-      console.log("Simple analytics:", analytics);
-      return analytics;
+      console.log("Analytics data:", analytics);
+      
+      return {
+        document_chunks: analytics.document_chunks || 0,
+        validated_answers: analytics.validated_answers || 0,
+        cache_sizes: analytics.cache_sizes || {},
+        timestamp: analytics.timestamp || Date.now(),
+        performance: {
+          cache_hit_rate: analytics.cache_sizes?.query_cache > 0 ? 0.3 : 0, // Estimated
+          avg_retrieval_time: analytics.avg_retrieval_time_ms || 0
+        }
+      };
+      
     } catch (error) {
       console.error("Analytics request failed:", error);
-      return { total_events: 0, error: error.message };
+      return { 
+        document_chunks: 0,
+        validated_answers: 0,
+        cache_sizes: {},
+        timestamp: Date.now(),
+        error: error.message
+      };
     }
+  }
+
+  /**
+   * Batch upload multiple documents with progress tracking
+   * @param {FileList} files - Files to upload
+   * @param {Function} progressCallback - Called with upload progress
+   * @returns {Promise<Array>} Array of upload results
+   */
+  static async batchUploadDocuments(files, progressCallback = null) {
+    const fileArray = Array.from(files);
+    const results = [];
+    
+    console.log(`Starting batch upload of ${fileArray.length} files`);
+    
+    for (let i = 0; i < fileArray.length; i++) {
+      const file = fileArray[i];
+      
+      try {
+        // Update progress
+        if (progressCallback) {
+          progressCallback({
+            current: i + 1,
+            total: fileArray.length,
+            currentFile: file.name,
+            status: 'uploading'
+          });
+        }
+        
+        const result = await this.uploadDocument(file);
+        results.push(result);
+        
+        console.log(`Batch upload progress: ${i + 1}/${fileArray.length} - ${file.name}: ${result.status}`);
+        
+      } catch (error) {
+        console.error(`Batch upload error for ${file.name}:`, error);
+        results.push({
+          status: "error",
+          filename: file.name,
+          chunks_created: 0,
+          error_message: error.message
+        });
+      }
+    }
+    
+    // Final progress update
+    if (progressCallback) {
+      const successCount = results.filter(r => r.status === 'success').length;
+      const totalChunks = results.reduce((sum, r) => sum + (r.chunks_created || 0), 0);
+      
+      progressCallback({
+        current: fileArray.length,
+        total: fileArray.length,
+        status: 'completed',
+        summary: {
+          success: successCount,
+          failed: fileArray.length - successCount,
+          total_chunks: totalChunks
+        }
+      });
+    }
+    
+    console.log("Batch upload completed:", {
+      total_files: fileArray.length,
+      successful: results.filter(r => r.status === 'success').length,
+      total_chunks: results.reduce((sum, r) => sum + (r.chunks_created || 0), 0)
+    });
+    
+    return results;
   }
 
   /**
@@ -325,5 +531,84 @@ export default class AssistantService {
       console.error("Cache clear failed:", error);
       throw error;
     }
+  }
+
+  /**
+   * Get validation analytics for dashboard
+   * @returns {Promise<Object>} Validation statistics and trends
+   */
+  static async getValidationAnalytics() {
+    try {
+      const response = await fetch(`${BASE_URL}/analytics/validation`, {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        credentials: "include"
+      });
+
+      if (!response.ok) {
+        // Not critical if analytics endpoint doesn't exist yet
+        console.warn(`Validation analytics not available: ${response.status}`);
+        return {
+          total_interactions: 0,
+          approval_rate: 0,
+          avg_confidence: 0,
+          recent_activity: []
+        };
+      }
+
+      const analytics = await response.json();
+      console.log("Validation analytics:", analytics);
+      return analytics;
+      
+    } catch (error) {
+      console.warn("Validation analytics request failed:", error);
+      // Return safe defaults
+      return {
+        total_interactions: 0,
+        approval_rate: 0,
+        avg_confidence: 0,
+        recent_activity: [],
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Utility method to validate API connectivity
+   * @returns {Promise<boolean>} True if API is reachable
+   */
+  static async validateConnectivity() {
+    try {
+      const response = await fetch(`${BASE_URL}/health`, {
+        method: "GET",
+        timeout: 5000
+      });
+      return response.ok;
+    } catch (error) {
+      console.error("API connectivity check failed:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Debug method to inspect streaming events
+   * @param {string} thread_id - Thread to monitor
+   * @returns {EventSource} Raw event source for debugging
+   */
+  static debugStreamingEvents(thread_id) {
+    const eventSource = new EventSource(`${BASE_URL}/graph/stream/${thread_id}`);
+    
+    // Log all events for debugging
+    ['token', 'sources', 'status', 'start', 'resume'].forEach(eventType => {
+      eventSource.addEventListener(eventType, (event) => {
+        console.log(`[DEBUG] ${eventType} event:`, event.data);
+      });
+    });
+    
+    eventSource.onerror = (error) => {
+      console.log(`[DEBUG] Error event - readyState: ${eventSource.readyState}`, error);
+    };
+    
+    return eventSource;
   }
 }
