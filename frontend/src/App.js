@@ -1,6 +1,9 @@
 import React, { useState, useRef, useEffect } from "react";
 import AssistantService from "./AssistantService";
 import ReactMarkdown from "react-markdown";
+import SourceViewer from "./components/SourceViewer";
+import ConfidenceIndicator from "./components/ConfidenceIndicator";
+import DocumentUploader from "./components/DocumentUploader";
 
 // Prevent MetaMask errors by setting ethereum to null if it's not needed
 if (window.ethereum) {
@@ -8,10 +11,11 @@ if (window.ethereum) {
   window.ethereum.autoRefreshOnNetworkChange = false;
 }
 
+// Flag to toggle between blocking API and streaming API
 const USE_STREAMING = true;
 
 const App = () => {
-  // Core UI states
+  // UI states: idle, waiting, user_feedback, finished
   const [uiState, setUiState] = useState("idle");
   const [question, setQuestion] = useState("");
   const [assistantResponse, setAssistantResponse] = useState("");
@@ -19,741 +23,326 @@ const App = () => {
   const [threadId, setThreadId] = useState(null);
   const [history, setHistory] = useState([]);
   
-  // RAG and enhancement states
+  // RAG-related states
   const [sources, setSources] = useState([]);
   const [retrievalConfidence, setRetrievalConfidence] = useState(null);
   const [documentStats, setDocumentStats] = useState({ total_chunks: 0, total_validated: 0 });
-  const [responseQuality, setResponseQuality] = useState(null);
-  
-  // Upload states
   const [showUploadModal, setShowUploadModal] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [isUploading, setIsUploading] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
-  
-  // Notification state
-  const [toast, setToast] = useState(null);
+  const [validationSuccess, setValidationSuccess] = useState(false);
 
-  // Refs for streaming responses
+  // Refs for tracking accumulated responses in streaming mode
   const startAccumulatedResponseRef = useRef("");
   const approveAccumulatedResponseRef = useRef("");
   const feedbackAccumulatedResponseRef = useRef("");
+  
   const feedbackInputRef = useRef(null);
-  const fileInputRef = useRef(null);
 
-  // Effects
   useEffect(() => {
     if (uiState === "user_feedback" && feedbackInputRef.current) {
       feedbackInputRef.current.focus();
     }
   }, [uiState]);
 
+  // Load document statistics on component mount
   useEffect(() => {
     loadDocumentStats();
   }, []);
 
-  useEffect(() => {
-    if (toast) {
-      const timer = setTimeout(() => setToast(null), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [toast]);
-
-  // Core functions
   const loadDocumentStats = async () => {
     try {
       const stats = await AssistantService.getDocumentStats();
       setDocumentStats(stats);
+      console.log("Loaded document stats:", stats);
     } catch (error) {
       console.warn("Failed to load document stats:", error);
     }
   };
 
+  // Handle sources event from streaming
   const handleSourcesEvent = (data) => {
     if (data.sources && Array.isArray(data.sources)) {
       setSources(data.sources);
       setRetrievalConfidence(data.confidence || null);
-      
-      const avgConfidence = data.confidence || 0;
-      setResponseQuality({
-        level: avgConfidence >= 0.8 ? 'high' : avgConfidence >= 0.6 ? 'medium' : 'low',
-        confidence: avgConfidence,
-        sourceCount: data.sources.length
-      });
-      
       console.log(`Received ${data.sources.length} sources with confidence: ${(data.confidence * 100).toFixed(1)}%`);
     }
   };
 
+  // Clear sources when starting new conversation
   const clearSources = () => {
     setSources([]);
     setRetrievalConfidence(null);
-    setResponseQuality(null);
+    setValidationSuccess(false);
   };
 
-  const displayToast = (message, type = 'success') => {
-    setToast({ message, type });
-  };
-
-  // Enhanced file upload
+  // Enhanced file upload handler
   const handleFileUpload = async (files) => {
     const fileArray = Array.from(files);
-    const supportedTypes = ['md', 'pdf', 'txt'];
+    console.log("Uploading files:", fileArray.map(f => f.name));
     
-    const validFiles = fileArray.filter(file => {
-      const extension = file.name.split('.').pop().toLowerCase();
-      return supportedTypes.includes(extension);
-    });
-
-    if (validFiles.length === 0) {
-      displayToast('No supported files found. Please upload .md, .pdf, or .txt files.', 'error');
-      return;
-    }
-
-    setIsUploading(true);
-    setUploadProgress(0);
-
     try {
-      const results = [];
-      for (let i = 0; i < validFiles.length; i++) {
-        const file = validFiles[i];
-        setUploadProgress(((i + 0.5) / validFiles.length) * 100);
-        
+      let totalChunks = 0;
+      let successCount = 0;
+      
+      for (const file of fileArray) {
         const result = await AssistantService.uploadDocument(file);
-        results.push({ file: file.name, ...result });
+        console.log("Upload result:", result);
         
-        setUploadProgress(((i + 1) / validFiles.length) * 100);
+        if (result.status === 'success') {
+          successCount++;
+          totalChunks += result.chunks_created || 0;
+        }
       }
-
-      const successCount = results.filter(r => r.status === 'success').length;
-      const totalChunks = results.reduce((sum, r) => sum + (r.chunks_created || 0), 0);
-
-      if (successCount === results.length) {
-        displayToast(`✅ Successfully uploaded ${successCount} files (${totalChunks} chunks created)`);
+      
+      if (successCount > 0) {
+        alert(`✅ Successfully uploaded ${successCount} file(s) (${totalChunks} chunks created)`);
+        await loadDocumentStats();
+        setShowUploadModal(false);
       } else {
-        displayToast(`⚠️ ${successCount}/${results.length} files uploaded successfully`, 'warning');
+        alert(`❌ Failed to upload files. Please check file formats.`);
       }
-
-      await loadDocumentStats();
-      setShowUploadModal(false);
       
     } catch (error) {
-      displayToast(`Upload failed: ${error.message}`, 'error');
-    } finally {
-      setIsUploading(false);
-      setUploadProgress(0);
+      alert(`Upload failed: ${error.message}`);
     }
   };
 
-  // Drag handlers
-  const handleDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true);
-    } else if (e.type === 'dragleave') {
-      setDragActive(false);
-    }
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileUpload(e.dataTransfer.files);
-    }
-  };
-
-  // Enhanced Knowledge Base Status Component
-  const KnowledgeBaseStatus = () => {
-    const coverage = documentStats.total_chunks > 0 
-      ? (documentStats.total_validated / documentStats.total_chunks * 100) 
-      : 0;
-
-    return (
-      <div style={{
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-        borderRadius: 12,
-        padding: 16,
-        margin: '16px 0',
-        color: 'white',
-        boxShadow: '0 4px 12px rgba(102, 126, 234, 0.3)'
-      }}>
-        <div style={{ 
-          display: 'grid', 
-          gridTemplateColumns: 'repeat(3, 1fr)', 
-          gap: 12 
-        }}>
-          <div style={{
-            textAlign: 'center',
-            padding: 12,
-            borderRadius: 8,
-            background: 'rgba(255, 255, 255, 0.1)',
-            backdropFilter: 'blur(10px)',
-            cursor: 'pointer',
-            transition: 'transform 0.3s ease'
-          }}
-          onMouseEnter={(e) => e.target.style.transform = 'translateY(-2px)'}
-          onMouseLeave={(e) => e.target.style.transform = 'translateY(0)'}
-          >
-            <div style={{ fontSize: 18, fontWeight: 600 }}>{documentStats.total_chunks}</div>
-            <div style={{ fontSize: 11, opacity: 0.9 }}>Documents</div>
-          </div>
+  // Enhanced ReactMarkdown with proper code formatting
+  const MarkdownRenderer = ({ content }) => (
+    <ReactMarkdown
+      components={{
+        code: ({node, inline, className, children, ...props}) => {
+          const match = /language-(\w+)/.exec(className || '');
+          const language = match ? match[1] : '';
           
-          <div style={{
-            textAlign: 'center',
-            padding: 12,
-            borderRadius: 8,
-            background: 'rgba(76, 175, 80, 0.2)',
-            backdropFilter: 'blur(10px)',
-            cursor: 'pointer',
-            transition: 'transform 0.3s ease'
-          }}
-          onMouseEnter={(e) => e.target.style.transform = 'translateY(-2px)'}
-          onMouseLeave={(e) => e.target.style.transform = 'translateY(0)'}
-          >
-            <div style={{ fontSize: 18, fontWeight: 600 }}>{documentStats.total_validated}</div>
-            <div style={{ fontSize: 11, opacity: 0.9 }}>Validated</div>
-          </div>
-          
-          <div style={{
-            textAlign: 'center',
-            padding: 12,
-            borderRadius: 8,
-            background: 'rgba(255, 255, 255, 0.1)',
-            backdropFilter: 'blur(10px)',
-            cursor: 'pointer',
-            transition: 'transform 0.3s ease'
-          }}
-          onMouseEnter={(e) => e.target.style.transform = 'translateY(-2px)'}
-          onMouseLeave={(e) => e.target.style.transform = 'translateY(0)'}
-          >
-            <div style={{ fontSize: 18, fontWeight: 600 }}>{coverage.toFixed(0)}%</div>
-            <div style={{ fontSize: 11, opacity: 0.9 }}>Coverage</div>
-          </div>
-        </div>
-      </div>
-    );
-  };
+          return !inline ? (
+            <div style={{
+              margin: '12px 0',
+              border: '1px solid #e1e5e9',
+              borderRadius: 6,
+              overflow: 'hidden',
+              backgroundColor: '#f8f9fa'
+            }}>
+              {language && (
+                <div style={{
+                  backgroundColor: '#e9ecef',
+                  padding: '4px 12px',
+                  fontSize: '12px',
+                  color: '#495057',
+                  fontWeight: 500,
+                  borderBottom: '1px solid #e1e5e9'
+                }}>
+                  {language.toUpperCase()}
+                </div>
+              )}
+              <pre style={{
+                margin: 0,
+                padding: '16px',
+                overflowX: 'auto',
+                backgroundColor: '#f8f9fa',
+                fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+                fontSize: '14px',
+                lineHeight: '1.4',
+                maxWidth: '100%'
+              }}>
+                <code className={className} {...props}>
+                  {children}
+                </code>
+              </pre>
+            </div>
+          ) : (
+            <code style={{
+              backgroundColor: '#f3f4f6',
+              padding: '2px 4px',
+              borderRadius: 3,
+              fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+              fontSize: '0.9em',
+              color: '#e83e8c'
+            }} {...props}>
+              {children}
+            </code>
+          );
+        },
+        pre: ({children}) => children // Prevent double wrapping
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
 
-  // Quality Badge Component
-  const QualityBadge = ({ quality }) => {
-    if (!quality) return null;
-
-    const getQualityStyle = (level) => {
-      switch (level) {
-        case 'high':
-          return { 
-            backgroundColor: '#e8f5e9', 
-            color: '#2e7d32',
-            border: '1px solid #4caf50',
-            icon: '🟢' 
-          };
-        case 'medium':
-          return { 
-            backgroundColor: '#fff3e0', 
-            color: '#f57c00',
-            border: '1px solid #ff9800',
-            icon: '🟡' 
-          };
-        case 'low':
-        default:
-          return { 
-            backgroundColor: '#ffebee', 
-            color: '#c62828',
-            border: '1px solid #f44336',
-            icon: '🔴' 
-          };
-      }
-    };
-
-    const style = getQualityStyle(quality.level);
-
-    return (
-      <div style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        padding: '4px 12px',
-        borderRadius: 20,
-        fontSize: 14,
-        fontWeight: 500,
-        gap: 4,
-        transition: 'all 0.3s ease',
-        ...style
-      }}>
-        <span>{style.icon}</span>
-        <span>{(quality.confidence * 100).toFixed(0)}% confidence</span>
-        <span style={{ opacity: 0.7 }}>• {quality.sourceCount} sources</span>
-      </div>
-    );
-  };
-
-  // Source Citations Component
-  const SourceCitations = ({ sources, confidence }) => {
-    const [expanded, setExpanded] = useState(false);
-
+  // Simple inline source display for compact view
+  const CompactSourceDisplay = ({ sources, confidence }) => {
     if (!sources || sources.length === 0) return null;
 
     return (
       <div style={{
-        marginTop: 12,
-        padding: 12,
-        background: '#f8f9fa',
-        borderLeft: '3px solid #4CAF50',
+        margin: '8px 0',
+        padding: '6px 10px',
+        backgroundColor: '#f0f7ff',
+        border: '1px solid #c2d8f2',
         borderRadius: 4,
-        fontSize: 14,
-        transition: 'all 0.3s ease'
-      }}>
-        <button
-          onClick={() => setExpanded(!expanded)}
-          style={{
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            fontSize: 14,
-            fontWeight: 500,
-            color: '#1565c0',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: 0,
-            transition: 'color 0.3s ease'
-          }}
-          onMouseEnter={(e) => e.target.style.color = '#0d47a1'}
-          onMouseLeave={(e) => e.target.style.color = '#1565c0'}
-        >
-          <span>📚</span>
-          <span>{sources.length} sources • {(confidence * 100).toFixed(0)}% confidence</span>
-          <span style={{ 
-            transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
-            transition: 'transform 0.2s ease'
-          }}>
-            ▼
-          </span>
-        </button>
-        
-        {expanded && (
-          <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e5e5e5' }}>
-            {sources.map((source, idx) => (
-              <div key={idx} style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '6px 8px',
-                marginBottom: 4,
-                borderRadius: 4,
-                transition: 'backgroundColor 0.3s ease',
-                ':hover': {
-                  backgroundColor: 'rgba(25, 118, 210, 0.05)'
-                }
-              }}
-              onMouseEnter={(e) => e.target.style.backgroundColor = 'rgba(25, 118, 210, 0.05)'}
-              onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 16 }}>
-                    {source.source_type === 'validated' ? '✓' : '📄'}
-                  </span>
-                  <span style={{ fontWeight: 500, color: '#333' }}>{source.metadata?.file || 'Unknown'}</span>
-                  {source.metadata?.section && (
-                    <span style={{ color: '#666', fontSize: 12 }}>
-                      → {source.metadata.section}
-                    </span>
-                  )}
-                </div>
-                <span style={{
-                  color: source.confidence >= 0.8 ? '#4caf50' : source.confidence >= 0.6 ? '#ff9800' : '#f44336',
-                  fontWeight: 600,
-                  fontSize: 12
-                }}>
-                  {(source.confidence * 100).toFixed(0)}%
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // Toast Notification Component
-  const Toast = ({ toast }) => {
-    if (!toast) return null;
-
-    const getToastStyle = (type) => {
-      switch (type) {
-        case 'success':
-          return { backgroundColor: '#e8f5e8', color: '#2e7d32', border: '1px solid #4caf50' };
-        case 'error':
-          return { backgroundColor: '#ffebee', color: '#c62828', border: '1px solid #f44336' };
-        case 'warning':
-          return { backgroundColor: '#fff3e0', color: '#e65100', border: '1px solid #ff9800' };
-        default:
-          return { backgroundColor: '#e8f5e8', color: '#2e7d32', border: '1px solid #4caf50' };
-      }
-    };
-
-    const style = getToastStyle(toast.type);
-
-    return (
-      <div style={{
-        position: 'fixed',
-        top: 20,
-        right: 20,
-        padding: '12px 16px',
-        borderRadius: 8,
-        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-        zIndex: 1000,
-        maxWidth: 400,
-        fontWeight: 500,
-        animation: 'slideIn 0.3s ease-out',
-        ...style
-      }}>
-        {toast.message}
-        <style>{`
-          @keyframes slideIn {
-            from { transform: translateX(100%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-          }
-        `}</style>
-      </div>
-    );
-  };
-
-  // Enhanced Upload Modal Component
-  const DocumentUploadModal = () => {
-    if (!showUploadModal) return null;
-
-    return (
-      <div style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        fontSize: 12,
         display: 'flex',
-        justifyContent: 'center',
         alignItems: 'center',
-        zIndex: 1000
+        gap: 8
       }}>
-        <div style={{
-          backgroundColor: 'white',
-          borderRadius: 12,
-          padding: 32,
-          maxWidth: 500,
-          width: '90%',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.2)'
-        }}>
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center', 
-            marginBottom: 24 
-          }}>
-            <h2 style={{ margin: 0, color: '#1976d2' }}>Upload Documents</h2>
-            <button 
-              onClick={() => setShowUploadModal(false)}
-              style={{
-                background: 'none',
-                border: 'none',
-                fontSize: 24,
-                cursor: 'pointer',
-                color: '#666',
-                padding: 4,
-                borderRadius: 4,
-                transition: 'backgroundColor 0.3s ease'
-              }}
-              onMouseEnter={(e) => e.target.style.backgroundColor = '#f0f0f0'}
-              onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
-            >
-              ×
-            </button>
-          </div>
-
-          {/* Enhanced Upload Area */}
-          <div
-            style={{
-              border: `2px dashed ${dragActive ? '#4299e1' : '#cbd5e0'}`,
-              borderRadius: 8,
-              padding: 40,
-              textAlign: 'center',
-              backgroundColor: dragActive ? '#bee3f8' : '#fafafa',
-              cursor: 'pointer',
-              transition: 'all 0.3s ease',
-              marginBottom: 16,
-              transform: dragActive ? 'scale(1.02)' : 'scale(1)'
-            }}
-            onClick={() => fileInputRef.current?.click()}
-            onDragEnter={handleDrag}
-            onDragLeave={handleDrag}
-            onDragOver={handleDrag}
-            onDrop={handleDrop}
-          >
-            <div style={{ 
-              fontSize: 48, 
-              marginBottom: 16,
-              animation: 'float 3s ease-in-out infinite'
-            }}>
-              📁
-            </div>
-            <div style={{ fontSize: 16, marginBottom: 8, fontWeight: 600 }}>
-              {dragActive ? 'Drop files here' : 'Drag & drop documents here'}
-            </div>
-            <div style={{ fontSize: 14, color: '#666', marginBottom: 16 }}>
-              Supports .md, .pdf, .txt files
-            </div>
-            <button style={{
-              padding: '8px 16px',
-              backgroundColor: '#1976d2',
-              color: 'white',
-              border: 'none',
-              borderRadius: 6,
-              cursor: 'pointer',
-              fontWeight: 500
-            }}>
-              Choose Files
-            </button>
-            
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".md,.pdf,.txt"
-              onChange={(e) => {
-                if (e.target.files && e.target.files.length > 0) {
-                  handleFileUpload(e.target.files);
-                }
-              }}
-              style={{ display: 'none' }}
-            />
-            
-            <style>{`
-              @keyframes float {
-                0%, 100% { transform: translateY(0px); }
-                50% { transform: translateY(-10px); }
-              }
-            `}</style>
-          </div>
-
-          {/* Upload Progress */}
-          {isUploading && (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ marginBottom: 8, fontSize: 14, color: '#666' }}>
-                Processing documents... {uploadProgress.toFixed(0)}%
-              </div>
-              <div style={{
-                width: '100%',
-                height: 8,
-                backgroundColor: '#e0e0e0',
-                borderRadius: 4,
-                overflow: 'hidden'
-              }}>
-                <div style={{
-                  width: `${uploadProgress}%`,
-                  height: '100%',
-                  backgroundColor: '#1976d2',
-                  transition: 'width 0.3s ease',
-                  position: 'relative'
-                }}>
-                  <div style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    height: '100%',
-                    width: '100%',
-                    background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent)',
-                    animation: 'shimmer 1.5s infinite'
-                  }} />
-                </div>
-              </div>
-              <style>{`
-                @keyframes shimmer {
-                  0% { transform: translateX(-100%); }
-                  100% { transform: translateX(100%); }
-                }
-              `}</style>
-            </div>
-          )}
-
-          {/* Empty State Guidance */}
-          {documentStats.total_chunks === 0 && !isUploading && (
-            <div style={{
-              marginTop: 20,
-              padding: 16,
-              background: 'rgba(25, 118, 210, 0.05)',
-              borderRadius: 8,
-              textAlign: 'left'
-            }}>
-              <p style={{ margin: '0 0 8px 0', fontWeight: 500, color: '#1976d2' }}>
-                💡 Get the most out of your assistant:
-              </p>
-              <ul style={{ margin: 0, paddingLeft: 16, fontSize: 13, color: '#666' }}>
-                <li>Upload API documentation for technical queries</li>
-                <li>Add README files for setup instructions</li>
-                <li>Include troubleshooting guides</li>
-                <li>Upload project specifications</li>
-              </ul>
-            </div>
-          )}
-        </div>
+        <span style={{ fontWeight: 600, color: '#1565c0' }}>
+          📚 {sources.length} source{sources.length !== 1 ? 's' : ''}
+        </span>
+        <ConfidenceIndicator 
+          confidence={confidence} 
+          sourceCount={sources.length}
+          size="small"
+        />
+        <span style={{ color: '#666', fontSize: 11 }}>
+          {sources.slice(0, 2).map(s => s.metadata?.file || 'Unknown').join(', ')}
+          {sources.length > 2 && ` +${sources.length - 2} more`}
+        </span>
       </div>
     );
   };
 
-  // Empty State Component
-  const EmptyState = () => (
-    <div style={{
-      textAlign: 'center',
-      padding: 40,
-      color: '#666',
-      background: 'linear-gradient(135deg, #f8faff 0%, #f0f7ff 100%)',
-      borderRadius: 12,
-      border: '1px solid #e0e7ff'
-    }}>
-      <div style={{ 
-        fontSize: 48, 
-        marginBottom: 16,
-        animation: 'pulse 2s ease-in-out infinite'
-      }}>
-        📚
-      </div>
-      <h3 style={{ margin: '0 0 8px 0', color: '#333', fontSize: 18 }}>
-        No documents uploaded yet
-      </h3>
-      <p style={{ margin: '0 0 20px 0', fontSize: 14 }}>
-        Upload your technical documentation to get AI-powered answers with citations
-      </p>
-      <button
-        onClick={() => setShowUploadModal(true)}
-        style={{
-          padding: '12px 24px',
-          backgroundColor: '#1976d2',
-          color: 'white',
-          border: 'none',
-          borderRadius: 8,
-          cursor: 'pointer',
-          fontSize: 16,
-          fontWeight: 500,
-          transition: 'all 0.3s ease',
-          boxShadow: '0 2px 8px rgba(25, 118, 210, 0.3)'
-        }}
-        onMouseEnter={(e) => {
-          e.target.style.backgroundColor = '#1565c0';
-          e.target.style.transform = 'translateY(-1px)';
-        }}
-        onMouseLeave={(e) => {
-          e.target.style.backgroundColor = '#1976d2';
-          e.target.style.transform = 'translateY(0)';
-        }}
-      >
-        Upload First Document
-      </button>
-      
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.7; }
-        }
-      `}</style>
-    </div>
-  );
-
+  // Submit handlers
   const handleStart = async () => {
+    // Show user message and pending spinner immediately
     setUiState("waiting");
     clearSources();
     setHistory([
       { role: "user", content: question },
-      { role: "assistant", content: null }
+      { role: "assistant", content: null } // null means pending/spinner
     ]);
     
     try {
-      const data = await AssistantService.createStreamingConversation(question);
-      setThreadId(data.thread_id);
-      
-      setAssistantResponse("");
-      startAccumulatedResponseRef.current = "";
-      
-      const eventSource = AssistantService.streamResponse(
-        data.thread_id,
-        (data) => {
-          if (data.content) {
-            startAccumulatedResponseRef.current += data.content;
-            setAssistantResponse(startAccumulatedResponseRef.current);
-            setHistory([
-              { role: "user", content: question },
-              { role: "assistant", content: startAccumulatedResponseRef.current }
-            ]);
-          } else if (data.sources) {
-            handleSourcesEvent(data);
-          } else if (data.status) {
-            if (data.status === "user_feedback") {
-              setUiState("idle");
-            } else if (data.status === "finished") {
-              setUiState("finished");
+      if (!USE_STREAMING) {
+        // Original blocking API call
+        const data = await AssistantService.startConversation(question);
+        setAssistantResponse(data.assistant_response);
+        setUiState("idle");
+        setThreadId(data.thread_id);
+        setHistory([
+          { role: "user", content: question },
+          { role: "assistant", content: data.assistant_response }
+        ]);
+      } else {
+        // Streaming API call
+        const data = await AssistantService.createStreamingConversation(question);
+        setThreadId(data.thread_id);
+        
+        // Initialize an empty response that will be built up token by token
+        setAssistantResponse("");
+        
+        // Reset the accumulated response ref for this session
+        startAccumulatedResponseRef.current = "";
+        
+        // Start streaming the response
+        const eventSource = AssistantService.streamResponse(
+          data.thread_id,
+          // Message callback - handle incoming tokens and sources
+          (data) => {
+            if (data.content) {
+              // Update our ref with the new content
+              startAccumulatedResponseRef.current += data.content;
+              
+              // Update React state with the accumulated content
+              setAssistantResponse(startAccumulatedResponseRef.current);
+              
+              // Update history with current accumulated response
+              setHistory([
+                { role: "user", content: question },
+                { role: "assistant", content: startAccumulatedResponseRef.current }
+              ]);
+            } else if (data.sources) {
+              // Handle sources event - FIXED: This was missing
+              handleSourcesEvent(data);
+            } else if (data.status) {
+              // Update UI state based on status updates
+              if (data.status === "user_feedback") {
+                setUiState("idle"); // Show review buttons
+              } else if (data.status === "finished") {
+                setUiState("finished");
+              }
             }
+          },
+          // Error callback
+          (error) => {
+            console.error("Streaming error:", error);
+            setUiState("idle");
+            const errorMessage = error && error.message ? error.message : "Unknown error";
+            alert("Streaming error: " + errorMessage);
+          },
+          // Complete callback
+          () => {
+            console.log("Stream completed");
           }
-        },
-        (error) => {
-          console.error("Streaming error:", error);
-          setUiState("idle");
-          displayToast("Connection error occurred", "error");
-        },
-        () => {
-          console.log("Stream completed");
-        }
-      );
+        );
+      }
     } catch (err) {
       setAssistantResponse("");
       setUiState("idle");
       clearSources();
-      displayToast("Failed to contact backend", "error");
+      const errorMessage = err && err.message ? err.message : "Unknown error";
+      alert("Failed to contact backend: " + errorMessage);
     }
   };
 
   const handleApprove = async () => {
     setUiState("waiting");
-    setHistory([...history, { role: "assistant", content: null }]);
+    setHistory([...history, { role: "assistant", content: null }]); // Show spinner
     
     try {
-      const data = await AssistantService.resumeStreamingConversation({
-        thread_id: threadId,
-        review_action: "approved"
-      });
-      
-      setAssistantResponse("");
-      approveAccumulatedResponseRef.current = "";
-      
-      const eventSource = AssistantService.streamResponse(
-        threadId,
-        (data) => {
-          if (data.content) {
-            approveAccumulatedResponseRef.current += data.content;
-            setAssistantResponse(approveAccumulatedResponseRef.current);
-            setHistory(prev => [
-              ...prev.slice(0, -1),
-              { role: "assistant", content: approveAccumulatedResponseRef.current }
-            ]);
-          } else if (data.status && data.status === "finished") {
-            setUiState("finished");
-            loadDocumentStats();
-            displayToast("✅ Answer validated and added to knowledge base");
+      if (!USE_STREAMING) {
+        const data = await AssistantService.submitReview({
+          thread_id: threadId,
+          review_action: "approved"
+        });
+        setAssistantResponse(data.assistant_response);
+        setUiState("finished");
+        setValidationSuccess(true);
+        setHistory(prev => [
+          ...prev.slice(0, -1),
+          { role: "assistant", content: data.assistant_response }
+        ]);
+      } else {
+        const data = await AssistantService.resumeStreamingConversation({
+          thread_id: threadId,
+          review_action: "approved"
+        });
+        
+        setAssistantResponse("");
+        approveAccumulatedResponseRef.current = "";
+        
+        const eventSource = AssistantService.streamResponse(
+          threadId,
+          (data) => {
+            if (data.content) {
+              approveAccumulatedResponseRef.current += data.content;
+              setAssistantResponse(approveAccumulatedResponseRef.current);
+              setHistory(prev => [
+                ...prev.slice(0, -1),
+                { role: "assistant", content: approveAccumulatedResponseRef.current }
+              ]);
+            } else if (data.status) {
+              if (data.status === "finished") {
+                setUiState("finished");
+                setValidationSuccess(true);
+                loadDocumentStats(); // Refresh stats after validation
+              }
+            }
+          },
+          (error) => {
+            console.error("Streaming error:", error);
+            setUiState("idle");
+            const errorMessage = error && error.message ? error.message : "Unknown error";
+            alert("Streaming error: " + errorMessage);
+          },
+          () => {
+            console.log("Stream completed");
           }
-        },
-        (error) => {
-          console.error("Streaming error:", error);
-          setUiState("idle");
-          displayToast("Streaming error occurred", "error");
-        },
-        () => {
-          console.log("Stream completed");
-        }
-      );
+        );
+      }
     } catch (err) {
       setUiState("idle");
-      displayToast("Failed to submit approval", "error");
+      const errorMessage = err && err.message ? err.message : "Unknown error";
+      alert("Failed to contact backend: " + errorMessage);
     }
   };
 
@@ -766,76 +355,209 @@ const App = () => {
     ]);
     
     try {
-      const data = await AssistantService.resumeStreamingConversation({
-        thread_id: threadId,
-        review_action: "feedback",
-        human_comment: feedback
-      });
-      
-      setAssistantResponse("");
-      feedbackAccumulatedResponseRef.current = "";
-      
-      const eventSource = AssistantService.streamResponse(
-        threadId,
-        (data) => {
-          if (data.content) {
-            feedbackAccumulatedResponseRef.current += data.content;
-            setAssistantResponse(feedbackAccumulatedResponseRef.current);
-            setHistory(prev => [
-              ...prev.slice(0, -1),
-              { role: "assistant", content: feedbackAccumulatedResponseRef.current }
-            ]);
-          } else if (data.sources) {
-            handleSourcesEvent(data);
-          } else if (data.status) {
-            if (data.status === "user_feedback") {
-              setUiState("idle");
-            } else if (data.status === "finished") {
-              setUiState("finished");
+      if (!USE_STREAMING) {
+        const data = await AssistantService.submitReview({
+          thread_id: threadId,
+          review_action: "feedback",
+          human_comment: feedback
+        });
+        setAssistantResponse(data.assistant_response);
+        setUiState("idle");
+        setHistory(prev => [
+          ...prev.slice(0, -1),
+          { role: "assistant", content: data.assistant_response }
+        ]);
+        setFeedback("");
+      } else {
+        const data = await AssistantService.resumeStreamingConversation({
+          thread_id: threadId,
+          review_action: "feedback",
+          human_comment: feedback
+        });
+        
+        setAssistantResponse("");
+        feedbackAccumulatedResponseRef.current = "";
+        
+        const eventSource = AssistantService.streamResponse(
+          threadId,
+          (data) => {
+            if (data.content) {
+              feedbackAccumulatedResponseRef.current += data.content;
+              setAssistantResponse(feedbackAccumulatedResponseRef.current);
+              setHistory(prev => [
+                ...prev.slice(0, -1),
+                { role: "assistant", content: feedbackAccumulatedResponseRef.current }
+              ]);
+            } else if (data.sources) {
+              handleSourcesEvent(data);
+            } else if (data.status) {
+              if (data.status === "user_feedback") {
+                setUiState("idle");
+              } else if (data.status === "finished") {
+                setUiState("finished");
+              }
             }
+          },
+          (error) => {
+            console.error("Streaming error:", error);
+            setUiState("idle");
+            const errorMessage = error && error.message ? error.message : "Unknown error";
+            alert("Streaming error: " + errorMessage);
+          },
+          () => {
+            console.log("Stream completed");
           }
-        },
-        (error) => {
-          console.error("Streaming error:", error);
-          setUiState("idle");
-          displayToast("Streaming error occurred", "error");
-        },
-        () => {
-          console.log("Stream completed");
-        }
-      );
-      
-      setFeedback("");
+        );
+        
+        setFeedback("");
+      }
     } catch (err) {
       setUiState("idle");
-      displayToast("Failed to submit feedback", "error");
+      const errorMessage = err && err.message ? err.message : "Unknown error";
+      alert("Failed to contact backend: " + errorMessage);
     }
   };
 
+  // Enhanced new session handler
+  const handleNewSession = () => {
+    setUiState("idle");
+    setQuestion("");
+    setAssistantResponse("");
+    setFeedback("");
+    setThreadId(null);
+    setHistory([]);
+    clearSources();
+  };
+
+  // Query suggestions based on document stats
+  const getQuerySuggestions = () => {
+    if (documentStats.total_chunks === 0) {
+      return [];
+    }
+    
+    return [
+      "What technologies are used in this project?",
+      "How do I set up the development environment?",
+      "What are the main features?",
+      "How do I deploy this application?"
+    ];
+  };
+
+  // Empty state component
+  const EmptyState = () => (
+    <div style={{
+      textAlign: 'center',
+      padding: '40px 20px',
+      color: '#666'
+    }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>📚</div>
+      <h3 style={{ margin: '0 0 12px 0', color: '#333' }}>
+        No documents uploaded yet
+      </h3>
+      <p style={{ margin: '0 0 20px 0', fontSize: 14 }}>
+        Upload documentation to start asking questions
+      </p>
+      <button
+        onClick={() => setShowUploadModal(true)}
+        style={{
+          padding: '12px 24px',
+          backgroundColor: '#1976d2',
+          color: 'white',
+          border: 'none',
+          borderRadius: 6,
+          cursor: 'pointer',
+          fontSize: 16,
+          fontWeight: 500
+        }}
+      >
+        📄 Upload Your First Document
+      </button>
+    </div>
+  );
+
+  // Query suggestions component
+  const QuerySuggestions = () => {
+    const suggestions = getQuerySuggestions();
+    
+    if (suggestions.length === 0) return null;
+    
+    return (
+      <div style={{
+        marginTop: 16,
+        padding: 12,
+        backgroundColor: '#f8faff',
+        border: '1px solid #e0e7ff',
+        borderRadius: 6
+      }}>
+        <div style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: '#1565c0',
+          marginBottom: 8
+        }}>
+          💡 Try asking:
+        </div>
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 6
+        }}>
+          {suggestions.map((suggestion, idx) => (
+            <button
+              key={idx}
+              onClick={() => setQuestion(suggestion)}
+              style={{
+                padding: '4px 8px',
+                fontSize: 11,
+                backgroundColor: 'white',
+                border: '1px solid #d0d7de',
+                borderRadius: 4,
+                cursor: 'pointer',
+                color: '#24292f',
+                transition: 'all 0.2s ease'
+              }}
+              onMouseOver={(e) => {
+                e.target.style.backgroundColor = '#f6f8fa';
+                e.target.style.borderColor = '#1976d2';
+              }}
+              onMouseOut={(e) => {
+                e.target.style.backgroundColor = 'white';
+                e.target.style.borderColor = '#d0d7de';
+              }}
+            >
+              {suggestion}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // Render
   return (
     <div style={{ 
       display: 'flex', 
       justifyContent: 'center', 
       alignItems: 'flex-start', 
       margin: '40px auto', 
-      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
-      minHeight: '80vh',
-      background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
-      minHeight: '100vh',
-      padding: '40px 20px'
+      fontFamily: 'sans-serif',
+      maxWidth: 1200,
+      width: '95%'
     }}>
       
-      {/* Enhanced Left Sidebar */}
+      {/* Left Sidebar */}
       <div style={{ 
         flex: '0 0 320px', 
         maxWidth: 320, 
-        marginRight: 32,
-        background: 'linear-gradient(135deg, #fafbfc 0%, #f0f2f5 100%)',
-        borderRadius: 12,
-        border: '1px solid #e8eaed',
-        padding: 20,
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-        backdropFilter: 'blur(10px)'
+        marginRight: 32, 
+        background: '#fafbfc', 
+        borderRadius: 8, 
+        border: '1px solid #eee', 
+        padding: 16, 
+        display: 'flex', 
+        flexDirection: 'column', 
+        alignItems: 'center',
+        height: 'fit-content'
       }}>
         <img 
           src="/hitl-assistent.png" 
@@ -843,209 +565,190 @@ const App = () => {
           style={{ 
             width: '75%', 
             height: 'auto', 
-            borderRadius: 8, 
-            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.1)', 
-            display: 'block',
-            margin: '0 auto 20px auto'
+            borderRadius: 6, 
+            boxShadow: '0 2px 12px #0001', 
+            marginBottom: 16 
           }} 
         />
-        
         <div style={{ 
           fontSize: 16, 
           color: '#444', 
           textAlign: 'center', 
-          marginBottom: 20,
-          fontWeight: 500
+          marginBottom: 12 
         }}>
           HITL Assistant Graph
         </div>
         
-        <KnowledgeBaseStatus />
+        {/* Document Stats */}
+        <div style={{ 
+          width: '100%', 
+          padding: 8, 
+          backgroundColor: 'white', 
+          borderRadius: 4, 
+          border: '1px solid #ddd',
+          fontSize: 12,
+          color: '#666',
+          marginBottom: 12
+        }}>
+          <div style={{ fontWeight: 600, marginBottom: 4, color: '#333' }}>
+            Knowledge Base
+          </div>
+          <div>📄 {documentStats.total_chunks || 0} document chunks</div>
+          <div>✅ {documentStats.total_validated || 0} validated answers</div>
+          {documentStats.total_chunks > 0 && (
+            <div style={{ 
+              marginTop: 6, 
+              padding: '3px 6px', 
+              backgroundColor: documentStats.total_validated > 0 ? '#e8f5e8' : '#fff3e0',
+              borderRadius: 3,
+              fontSize: 10,
+              fontWeight: 500,
+              color: documentStats.total_validated > 0 ? '#2e7d32' : '#e65100'
+            }}>
+              {documentStats.total_validated > 0 ? 
+                `${Math.round((documentStats.total_validated / documentStats.total_chunks) * 100)}% coverage` :
+                'Learning mode active'
+              }
+            </div>
+          )}
+        </div>
 
-        <button
-          onClick={() => setShowUploadModal(true)}
-          style={{
-            width: '100%',
-            padding: 14,
-            backgroundColor: '#1976d2',
-            color: 'white',
-            border: 'none',
-            borderRadius: 8,
-            cursor: 'pointer',
-            fontSize: 14,
-            fontWeight: 600,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            transition: 'all 0.3s ease',
-            boxShadow: '0 2px 8px rgba(25, 118, 210, 0.3)',
-            marginTop: 16
-          }}
-          onMouseEnter={(e) => {
-            e.target.style.backgroundColor = '#1565c0';
-            e.target.style.transform = 'translateY(-1px)';
-          }}
-          onMouseLeave={(e) => {
-            e.target.style.backgroundColor = '#1976d2';
-            e.target.style.transform = 'translateY(0)';
-          }}
-        >
-          📄 Upload Documents
-        </button>
+        {/* Upload Button - Only show when modal is closed */}
+        {!showUploadModal && (
+          <button
+            onClick={() => setShowUploadModal(true)}
+            style={{
+              width: '100%',
+              padding: '12px',
+              backgroundColor: '#1976d2',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              cursor: 'pointer',
+              fontSize: 14,
+              fontWeight: 500,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8
+            }}
+          >
+            📄 Upload Documents
+          </button>
+        )}
 
-        {/* Empty State Hint */}
-        {documentStats.total_chunks === 0 && (
+        {/* Upload status when modal is open */}
+        {showUploadModal && (
           <div style={{
-            marginTop: 20,
-            padding: 16,
+            width: '100%',
+            padding: 12,
             backgroundColor: '#f0f7ff',
-            borderRadius: 8,
-            border: '1px solid #e0e7ff',
+            border: '1px solid #c2d8f2',
+            borderRadius: 6,
+            fontSize: 12,
+            color: '#1565c0',
             textAlign: 'center'
           }}>
-            <div style={{ fontSize: 14, color: '#1976d2', fontWeight: 500, marginBottom: 8 }}>
-              🚀 Get Started
-            </div>
-            <div style={{ fontSize: 12, color: '#666' }}>
-              Upload documentation to enable AI-powered answers with citations
-            </div>
+            📤 Upload in progress...
           </div>
         )}
       </div>
 
-      {/* Enhanced Main Content */}
+      {/* Main Content */}
       <div style={{ 
         maxWidth: 600, 
-        width: '95%', 
-        padding: 32, 
+        width: '100%', 
+        padding: 24, 
         border: '1px solid #eee', 
-        borderRadius: 12, 
+        borderRadius: 8, 
         position: 'relative', 
-        background: '#fff',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-        minHeight: 500
+        background: '#fff' 
       }}>
         
-        {/* Enhanced Header */}
+        {/* Header with New Session Button */}
         <div style={{ 
           display: 'flex', 
           justifyContent: 'space-between', 
           alignItems: 'center', 
-          marginBottom: 24,
-          paddingBottom: 16,
-          borderBottom: '1px solid #f0f0f0'
+          marginBottom: 16 
         }}>
-          <h1 style={{ 
-            margin: 0, 
-            fontSize: 24, 
-            background: 'linear-gradient(135deg, #1976d2 0%, #42a5f5 100%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            fontWeight: 700
-          }}>
-            AI Documentation Assistant
-          </h1>
+          <h2 style={{ margin: 0 }}>AI Documentation Assistant</h2>
           <button
-            onClick={() => {
-              setUiState("idle");
-              setQuestion("");
-              setAssistantResponse("");
-              setFeedback("");
-              setThreadId(null);
-              setHistory([]);
-              clearSources();
+            onClick={handleNewSession}
+            style={{ 
+              padding: "8px 18px", 
+              fontSize: 16, 
+              borderRadius: 6, 
+              background: "#f5f5f5", 
+              border: "1px solid #ddd", 
+              cursor: "pointer" 
             }}
-            style={{
-              padding: '10px 20px',
-              fontSize: 14,
-              borderRadius: 8,
-              background: '#f5f5f5',
-              border: '1px solid #ddd',
-              cursor: 'pointer',
-              transition: 'all 0.3s ease'
-            }}
-            onMouseEnter={(e) => e.target.style.backgroundColor = '#e8e8e8'}
-            onMouseLeave={(e) => e.target.style.backgroundColor = '#f5f5f5'}
           >
             New Session
           </button>
         </div>
 
-        {/* Enhanced Input Section */}
+        {/* Empty State or Input Section */}
         {uiState === "idle" && history.length === 0 && (
-          <div style={{ marginBottom: 24 }}>
-            <div style={{ 
-              display: 'flex', 
-              gap: 12,
-              marginBottom: 16
-            }}>
+          documentStats.total_chunks === 0 ? (
+            <EmptyState />
+          ) : (
+            <div>
               <input
                 type="text"
                 placeholder="Ask a question about your documentation..."
                 value={question}
                 onChange={e => setQuestion(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && question.trim()) handleStart(); }}
-                style={{
-                  flex: 1,
-                  padding: 16,
-                  fontSize: 16,
-                  borderRadius: 8,
-                  border: '2px solid #e0e0e0',
-                  outline: 'none',
-                  transition: 'all 0.3s ease',
-                  background: 'white'
-                }}
-                onFocus={(e) => {
-                  e.target.style.borderColor = '#1976d2';
-                  e.target.style.boxShadow = '0 0 0 3px rgba(25, 118, 210, 0.1)';
-                }}
-                onBlur={(e) => {
-                  e.target.style.borderColor = '#e0e0e0';
-                  e.target.style.boxShadow = 'none';
+                style={{ 
+                  width: "70%", 
+                  padding: 12, 
+                  fontSize: 18, 
+                  borderRadius: 6, 
+                  border: '1px solid #bbb', 
+                  marginRight: 8 
                 }}
               />
               <button 
-                onClick={handleStart} 
+                onClick={handleStart}
                 disabled={!question.trim()}
-                style={{
-                  padding: '16px 32px',
-                  fontSize: 16,
-                  borderRadius: 8,
-                  border: 'none',
-                  background: question.trim() ? '#1976d2' : '#ccc',
-                  color: 'white',
-                  cursor: question.trim() ? 'pointer' : 'not-allowed',
-                  fontWeight: 600,
-                  transition: 'all 0.3s ease',
-                  boxShadow: question.trim() ? '0 2px 8px rgba(25, 118, 210, 0.3)' : 'none'
+                style={{ 
+                  padding: '12px 32px', 
+                  fontSize: 20, 
+                  borderRadius: 6, 
+                  border: '1px solid #bbb', 
+                  background: question.trim() ? '#1976d2' : '#f5f5f5',
+                  color: question.trim() ? 'white' : '#999',
+                  cursor: question.trim() ? 'pointer' : 'not-allowed', 
+                  height: 48 
                 }}
               >
                 Send
               </button>
+              
+              {/* Query Suggestions */}
+              <QuerySuggestions />
             </div>
-            
-            {/* Show empty state if no documents */}
-            {documentStats.total_chunks === 0 && <EmptyState />}
+          )
+        )}
+
+        {/* Sources Display - Show during waiting and idle states */}
+        {sources.length > 0 && (uiState === "waiting" || uiState === "idle") && (
+          <div style={{ margin: '16px 0' }}>
+            <CompactSourceDisplay sources={sources} confidence={retrievalConfidence} />
+            <SourceViewer 
+              sources={sources} 
+              confidence={retrievalConfidence}
+              isVisible={true}
+            />
           </div>
         )}
 
-        {/* Response Quality Indicator */}
-        {responseQuality && uiState !== "finished" && (
-          <div style={{ marginBottom: 16 }}>
-            <QualityBadge quality={responseQuality} />
-          </div>
-        )}
-
-        {/* Sources Display */}
-        {sources.length > 0 && uiState !== "finished" && (
-          <SourceCitations sources={sources} confidence={retrievalConfidence} />
-        )}
-
-        {/* Enhanced Conversation History */}
+        {/* Conversation History */}
         {history.length > 0 && (
           <div style={{ margin: "24px 0" }}>
             {history.map((msg, idx) => {
+              // Hide the last assistant message if in finished state
               if (uiState === "finished" && msg.role === "assistant" && idx === history.length - 1) {
                 return null;
               }
@@ -1058,15 +761,10 @@ const App = () => {
               return (
                 <div key={idx} style={{ 
                   textAlign: msg.role === "user" ? "right" : "left", 
-                  margin: "16px 0"
+                  margin: "12px 0" 
                 }}>
                   {hint && (
-                    <div style={{ 
-                      fontSize: 12, 
-                      color: "#888", 
-                      marginBottom: 4,
-                      fontWeight: 500
-                    }}>
+                    <div style={{ fontSize: 12, color: "#888", marginBottom: 2 }}>
                       {hint}
                     </div>
                   )}
@@ -1074,48 +772,52 @@ const App = () => {
                     display: 'inline-block',
                     maxWidth: '85%',
                     padding: msg.role === "assistant" ? '12px 16px' : '8px 12px',
-                    borderRadius: 12,
-                    background: msg.role === "assistant" 
-                      ? 'linear-gradient(135deg, #f0f7ff 0%, #e3f2fd 100%)' 
-                      : 'linear-gradient(135deg, #e8f5e8 0%, #c8e6c9 100%)',
-                    border: `1px solid ${msg.role === "assistant" ? '#c2d8f2' : '#c8e6c9'}`,
-                    position: 'relative',
-                    animation: 'fadeIn 0.3s ease-out'
+                    backgroundColor: msg.role === "assistant" ? 'rgba(25, 118, 210, 0.08)' : '#f0f7ff',
+                    border: msg.role === "assistant" ? '1px solid rgba(25, 118, 210, 0.2)' : '1px solid #c2d8f2',
+                    borderRadius: msg.role === "assistant" ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
+                    textAlign: 'left'
                   }}>
-                    <div style={{
-                      fontWeight: 600,
-                      color: msg.role === "assistant" ? '#1976d2' : '#2e7d32',
-                      marginBottom: msg.role === "assistant" ? 8 : 0,
-                      fontSize: 14
+                    <span style={{
+                      fontWeight: msg.role === "user" ? 600 : 700,
+                      color: msg.role === "assistant" ? '#1976d2' : '#1565c0',
+                      fontSize: 13,
+                      marginBottom: msg.role === "assistant" ? 6 : 0,
+                      display: 'block'
                     }}>
                       {msg.role === "user" ? "You" : "Assistant"}
-                    </div>
+                    </span>
+                    
                     {msg.role === "assistant" && msg.content === null ? (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ 
+                        display: "flex", 
+                        alignItems: "center",
+                        gap: 8,
+                        color: '#666'
+                      }}>
                         <div style={{
-                          border: "3px solid #f0f0f0",
+                          border: "3px solid #eee",
                           borderTop: "3px solid #1976d2",
                           borderRadius: "50%",
                           width: 20,
                           height: 20,
                           animation: "spin 1s linear infinite"
                         }} />
-                        <span style={{ color: '#666', fontSize: 14 }}>Thinking...</span>
+                        <span style={{ fontSize: 14 }}>
+                          {sources.length > 0 ? "Generating response..." : "Finding relevant sources..."}
+                        </span>
                         <style>{`
                           @keyframes spin {
                             0% { transform: rotate(0deg); }
                             100% { transform: rotate(360deg); }
                           }
-                          @keyframes fadeIn {
-                            from { opacity: 0; transform: translateY(10px); }
-                            to { opacity: 1; transform: translateY(0); }
-                          }
                         `}</style>
                       </div>
                     ) : msg.role === "assistant" ? (
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      <MarkdownRenderer content={msg.content} />
                     ) : (
-                      <div style={{ fontSize: 15 }}>{msg.content}</div>
+                      <div style={{ fontSize: 15, lineHeight: 1.4 }}>
+                        {msg.content}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1124,102 +826,67 @@ const App = () => {
           </div>
         )}
 
-        {/* Enhanced Feedback Form */}
+        {/* Feedback Form */}
         {uiState === "user_feedback" && (
           <div style={{ 
             marginTop: 24, 
-            background: 'linear-gradient(135deg, #f8fafd 0%, #f0f7ff 100%)', 
+            background: '#f8fafd', 
             border: '1px solid #e3eaf2', 
-            borderRadius: 12, 
-            padding: 24 
+            borderRadius: 6, 
+            padding: 18 
           }}>
-            <h3 style={{ 
-              margin: '0 0 16px 0', 
-              color: '#1976d2',
-              fontSize: 18,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8
-            }}>
-              💬 Help improve this response
-            </h3>
+            <div style={{ marginBottom: 8, fontWeight: 600 }}>
+              Please provide feedback to improve the assistant's answer:
+            </div>
             <textarea
               ref={feedbackInputRef}
               value={feedback}
               onChange={e => setFeedback(e.target.value)}
-              rows={4}
-              style={{
-                width: '100%',
-                padding: 16,
-                fontSize: 15,
-                borderRadius: 8,
-                border: '2px solid #e0e0e0',
-                outline: 'none',
+              rows={3}
+              style={{ 
+                width: '95%', 
+                padding: 12, 
+                fontSize: 16, 
+                borderRadius: 6, 
+                border: '1px solid #bbb', 
                 resize: 'vertical',
-                fontFamily: 'inherit',
-                boxSizing: 'border-box',
-                marginBottom: 16,
-                transition: 'all 0.3s ease'
+                fontFamily: 'inherit'
               }}
-              placeholder="What could be improved about this response?"
-              onFocus={(e) => {
-                e.target.style.borderColor = '#1976d2';
-                e.target.style.boxShadow = '0 0 0 3px rgba(25, 118, 210, 0.1)';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#e0e0e0';
-                e.target.style.boxShadow = 'none';
-              }}
+              placeholder="Your feedback..."
             />
-            <div style={{ 
-              display: 'flex',
-              gap: 12,
-              justifyContent: 'flex-end'
-            }}>
+            <div style={{ marginTop: 12 }}>
+              <button
+                onClick={handleFeedback}
+                disabled={!feedback.trim()}
+                style={{ 
+                  marginRight: 8, 
+                  padding: "10px 24px", 
+                  fontSize: 16,
+                  backgroundColor: feedback.trim() ? '#1976d2' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 6,
+                  cursor: feedback.trim() ? 'pointer' : 'not-allowed'
+                }}
+              >
+                Submit Feedback
+              </button>
               <button
                 onClick={() => {
                   setUiState("idle");
                   setFeedback("");
                 }}
-                style={{
-                  padding: '12px 24px',
-                  background: '#f5f5f5',
+                style={{ 
+                  padding: "10px 24px", 
+                  fontSize: 16,
+                  backgroundColor: '#f5f5f5',
                   color: '#333',
                   border: '1px solid #ddd',
-                  borderRadius: 8,
-                  cursor: 'pointer',
-                  fontSize: 15,
-                  fontWeight: 500,
-                  transition: 'all 0.3s ease'
-                }}
-                onMouseEnter={(e) => {
-                  e.target.style.backgroundColor = '#e8e8e8';
-                  e.target.style.transform = 'translateY(-1px)';
-                }}
-                onMouseLeave={(e) => {
-                  e.target.style.backgroundColor = '#f5f5f5';
-                  e.target.style.transform = 'translateY(0)';
+                  borderRadius: 6,
+                  cursor: 'pointer'
                 }}
               >
                 Cancel
-              </button>
-              <button
-                onClick={handleFeedback}
-                disabled={!feedback.trim()}
-                style={{
-                  padding: '12px 24px',
-                  fontSize: 15,
-                  borderRadius: 8,
-                  border: 'none',
-                  background: feedback.trim() ? '#1976d2' : '#ccc',
-                  color: 'white',
-                  cursor: feedback.trim() ? 'pointer' : 'not-allowed',
-                  fontWeight: 600,
-                  transition: 'all 0.3s ease',
-                  boxShadow: feedback.trim() ? '0 2px 8px rgba(25, 118, 210, 0.3)' : 'none'
-                }}
-              >
-                Submit Feedback
               </button>
             </div>
           </div>
@@ -1228,132 +895,153 @@ const App = () => {
         {/* Enhanced Review Buttons */}
         {uiState === "idle" && (
           (assistantResponse || (history.length > 0 && history[history.length - 1].role === "assistant" && history[history.length - 1].content)) && (
-            <div style={{ 
-              marginTop: 24, 
-              display: 'flex',
-              gap: 12,
-              justifyContent: 'flex-end'
-            }}>
-              <button
-                onClick={() => setUiState("user_feedback")}
-                style={{ 
-                  padding: "12px 24px", 
-                  fontSize: 15,
-                  borderRadius: 8,
-                  border: '1px solid #ff9800',
-                  background: '#fff3e0',
-                  color: '#e65100',
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                  transition: 'all 0.3s ease',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6
-                }}
-                onMouseEnter={(e) => e.target.style.backgroundColor = '#ffe0b3'}
-                onMouseLeave={(e) => e.target.style.backgroundColor = '#fff3e0'}
-              >
-                💬 Provide Feedback
-              </button>
-              <button
-                onClick={handleApprove}
-                style={{ 
-                  padding: "12px 24px", 
-                  fontSize: 15,
-                  borderRadius: 8,
-                  border: 'none',
-                  background: 'linear-gradient(135deg, #4caf50 0%, #45a049 100%)',
-                  color: 'white',
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                  transition: 'all 0.3s ease',
-                  boxShadow: '0 2px 8px rgba(76, 175, 80, 0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6
-                }}
-                onMouseEnter={(e) => {
-                  e.target.style.background = 'linear-gradient(135deg, #45a049 0%, #388e3c 100%)';
-                  e.target.style.transform = 'translateY(-1px)';
-                }}
-                onMouseLeave={(e) => {
-                  e.target.style.background = 'linear-gradient(135deg, #4caf50 0%, #45a049 100%)';
-                  e.target.style.transform = 'translateY(0)';
-                }}
-              >
-                ✓ Approve & Validate
-              </button>
+            <div style={{ marginTop: 24 }}>
+              {/* Show confidence indicator if available */}
+              {retrievalConfidence && (
+                <div style={{ marginBottom: 12, textAlign: 'center' }}>
+                  <ConfidenceIndicator 
+                    confidence={retrievalConfidence}
+                    sourceCount={sources.length}
+                    size="medium"
+                  />
+                </div>
+              )}
+              
+              <div style={{ textAlign: 'right' }}>
+                <button
+                  onClick={handleApprove}
+                  style={{ 
+                    marginRight: 8, 
+                    padding: "12px 24px", 
+                    fontSize: 16,
+                    backgroundColor: '#4caf50',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    fontWeight: 500,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    float: 'right',
+                    marginLeft: 8
+                  }}
+                >
+                  ✓ Approve & Validate
+                </button>
+                <button
+                  onClick={() => setUiState("user_feedback")}
+                  style={{ 
+                    padding: "12px 24px", 
+                    fontSize: 16,
+                    backgroundColor: '#ff9800',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    fontWeight: 500,
+                    float: 'right'
+                  }}
+                >
+                  💬 Provide Feedback
+                </button>
+                <div style={{ clear: 'both' }} />
+              </div>
             </div>
           )
         )}
 
-        {/* Enhanced Final Version Display */}
+        {/* Enhanced Final Version with Validation Success */}
         {uiState === "finished" && (
-          <div style={{ 
-            marginTop: 24, 
-            background: 'linear-gradient(135deg, #f0f7ff 0%, #e8f5e8 100%)', 
-            border: '2px solid #4caf50', 
-            borderRadius: 12, 
-            padding: 24,
-            position: 'relative'
-          }}>
-            <div style={{ 
-              display: 'flex',
-              alignItems: 'center',
-              marginBottom: 16,
-              gap: 12
-            }}>
-              <h3 style={{ 
-                margin: 0, 
-                color: '#1976d2',
-                fontSize: 18,
+          <div style={{ marginTop: 24 }}>
+            {/* Validation Success Message */}
+            {validationSuccess && (
+              <div style={{
+                marginBottom: 16,
+                padding: 12,
+                backgroundColor: '#e8f5e8',
+                border: '1px solid #4caf50',
+                borderRadius: 6,
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8
               }}>
-                ✅ Validated Answer
-              </h3>
-              {responseQuality && (
-                <QualityBadge quality={responseQuality} />
-              )}
-            </div>
-            
-            <div style={{ 
-              background: 'white',
-              padding: 20,
-              borderRadius: 8,
-              border: '1px solid #e0e7ff',
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05)'
-            }}>
-              <ReactMarkdown>{assistantResponse}</ReactMarkdown>
-            </div>
-
-            {/* Sources in finished state */}
-            {sources.length > 0 && (
-              <SourceCitations sources={sources} confidence={retrievalConfidence} />
+                <span style={{ fontSize: 16 }}>✅</span>
+                <div>
+                  <div style={{ fontWeight: 600, color: '#2e7d32', fontSize: 14 }}>
+                    Answer Validated Successfully
+                  </div>
+                  <div style={{ fontSize: 12, color: '#388e3c', marginTop: 2 }}>
+                    This response will be prioritized in future queries
+                  </div>
+                </div>
+                {retrievalConfidence && (
+                  <div style={{ marginLeft: 'auto' }}>
+                    <ConfidenceIndicator 
+                      confidence={retrievalConfidence}
+                      sourceCount={sources.length}
+                      hasValidated={true}
+                      size="small"
+                    />
+                  </div>
+                )}
+              </div>
             )}
 
-            <div style={{
-              marginTop: 16,
-              padding: 12,
-              backgroundColor: 'rgba(76, 175, 80, 0.1)',
-              borderRadius: 8,
-              border: '1px solid #c8e6c9',
-              fontSize: 13,
-              color: '#2e7d32',
-              textAlign: 'center',
-              fontWeight: 500
+            {/* Final Response */}
+            <div style={{ 
+              background: '#f0f7ff', 
+              border: '1px solid #c2d8f2', 
+              borderRadius: 6, 
+              padding: 18 
             }}>
-              🎯 This answer has been validated and will be prioritized in future queries
+              <div style={{ 
+                marginBottom: 8, 
+                fontWeight: 600, 
+                color: '#1976d2',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8
+              }}>
+                Final Validated Response:
+                {validationSuccess && (
+                  <span style={{
+                    backgroundColor: '#4caf50',
+                    color: 'white',
+                    padding: '2px 6px',
+                    borderRadius: 10,
+                    fontSize: 10,
+                    fontWeight: 500
+                  }}>
+                    VALIDATED
+                  </span>
+                )}
+              </div>
+              
+              <div style={{ padding: 12 }}>
+                <MarkdownRenderer content={assistantResponse} />
+              </div>
+
+              {/* Sources in finished state */}
+              {sources.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <CompactSourceDisplay sources={sources} confidence={retrievalConfidence} />
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* Document Upload Modal */}
-        <DocumentUploadModal />
-
-        {/* Toast Notifications */}
-        <Toast toast={toast} />
+        {/* Upload Modal */}
+        {showUploadModal && (
+          <DocumentUploader 
+            onUploadComplete={(results) => {
+              console.log("Upload completed:", results);
+              loadDocumentStats();
+            }}
+            onClose={() => setShowUploadModal(false)}
+          />
+        )}
       </div>
     </div>
   );
