@@ -5,17 +5,16 @@ import SourceViewer from "./components/SourceViewer";
 import ConfidenceIndicator from "./components/ConfidenceIndicator";
 import DocumentUploader from "./components/DocumentUploader";
 
-// Prevent MetaMask errors by setting ethereum to null if it's not needed
+// Prevent MetaMask errors
 if (window.ethereum) {
   console.log("MetaMask detected but not needed for this application");
   window.ethereum.autoRefreshOnNetworkChange = false;
 }
 
-// Flag to toggle between blocking API and streaming API
 const USE_STREAMING = true;
 
 const App = () => {
-  // UI states: idle, waiting, user_feedback, finished
+  // Core states
   const [uiState, setUiState] = useState("idle");
   const [question, setQuestion] = useState("");
   const [assistantResponse, setAssistantResponse] = useState("");
@@ -29,12 +28,12 @@ const App = () => {
   const [documentStats, setDocumentStats] = useState({ total_chunks: 0, total_validated: 0 });
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [validationSuccess, setValidationSuccess] = useState(false);
+  const [errorMessage, setErrorMessage] = useState(null);
 
-  // Refs for tracking accumulated responses in streaming mode
+  // Refs for streaming
   const startAccumulatedResponseRef = useRef("");
   const approveAccumulatedResponseRef = useRef("");
   const feedbackAccumulatedResponseRef = useRef("");
-  
   const feedbackInputRef = useRef(null);
 
   useEffect(() => {
@@ -43,7 +42,6 @@ const App = () => {
     }
   }, [uiState]);
 
-  // Load document statistics on component mount
   useEffect(() => {
     loadDocumentStats();
   }, []);
@@ -55,26 +53,49 @@ const App = () => {
       console.log("Loaded document stats:", stats);
     } catch (error) {
       console.warn("Failed to load document stats:", error);
+      setErrorMessage("Failed to connect to knowledge base");
     }
   };
 
-  // Handle sources event from streaming
+  // Enhanced source event handler with better metadata extraction
   const handleSourcesEvent = (data) => {
     if (data.sources && Array.isArray(data.sources)) {
-      setSources(data.sources);
+      // FIXED: Better filename extraction from metadata
+      const enhancedSources = data.sources.map(source => {
+        const metadata = source.metadata || {};
+        const originalMetadata = metadata.debug_original_metadata || {};
+        
+        // Try multiple ways to get filename
+        const filename = 
+          metadata.file !== 'Unknown' ? metadata.file :
+          originalMetadata.source_file || 
+          originalMetadata.filename ||
+          (source.source_type === 'validated' ? 'Validated Answer' : 'Documentation');
+        
+        return {
+          ...source,
+          metadata: {
+            ...metadata,
+            file: filename,
+            section: metadata.section || originalMetadata.section || ''
+          }
+        };
+      });
+      
+      setSources(enhancedSources);
       setRetrievalConfidence(data.confidence || null);
-      console.log(`Received ${data.sources.length} sources with confidence: ${(data.confidence * 100).toFixed(1)}%`);
+      console.log(`Received ${enhancedSources.length} sources with confidence: ${(data.confidence * 100).toFixed(1)}%`);
     }
   };
 
-  // Clear sources when starting new conversation
   const clearSources = () => {
     setSources([]);
     setRetrievalConfidence(null);
     setValidationSuccess(false);
+    setErrorMessage(null);
   };
 
-  // Enhanced file upload handler
+  // Enhanced file upload with better error handling
   const handleFileUpload = async (files) => {
     const fileArray = Array.from(files);
     console.log("Uploading files:", fileArray.map(f => f.name));
@@ -82,6 +103,7 @@ const App = () => {
     try {
       let totalChunks = 0;
       let successCount = 0;
+      const errors = [];
       
       for (const file of fileArray) {
         const result = await AssistantService.uploadDocument(file);
@@ -90,23 +112,78 @@ const App = () => {
         if (result.status === 'success') {
           successCount++;
           totalChunks += result.chunks_created || 0;
+        } else {
+          errors.push(`${file.name}: ${result.error_message}`);
         }
       }
       
       if (successCount > 0) {
-        alert(`✅ Successfully uploaded ${successCount} file(s) (${totalChunks} chunks created)`);
         await loadDocumentStats();
         setShowUploadModal(false);
+        setErrorMessage(null);
+        
+        // Success message with actionable guidance
+        const successMsg = `✅ Successfully uploaded ${successCount} file(s) (${totalChunks} chunks created). ${
+          errors.length > 0 ? `\n⚠️ ${errors.length} files failed: ${errors.join(', ')}` : ''
+        }`;
+        alert(successMsg);
       } else {
-        alert(`❌ Failed to upload files. Please check file formats.`);
+        setErrorMessage(`Upload failed: ${errors.join(', ')}`);
       }
       
     } catch (error) {
-      alert(`Upload failed: ${error.message}`);
+      setErrorMessage(`Upload system error: ${error.message}`);
     }
   };
 
-  // Enhanced ReactMarkdown with proper code formatting
+  // Enhanced confidence display with user guidance
+  const getConfidenceGuidance = (confidence) => {
+    if (confidence >= 0.8) {
+      return {
+        level: "high",
+        message: "High confidence - answer based on reliable sources",
+        color: "#4caf50",
+        icon: "✓"
+      };
+    } else if (confidence >= 0.6) {
+      return {
+        level: "medium", 
+        message: "Medium confidence - consider validating if helpful",
+        color: "#ff9800",
+        icon: "~"
+      };
+    } else {
+      return {
+        level: "low",
+        message: "Low confidence - upload more specific documentation to improve accuracy",
+        color: "#f44336", 
+        icon: "!"
+      };
+    }
+  };
+
+  // Smart filename display
+  const getSourceFilesList = (sources) => {
+    if (!sources || sources.length === 0) return "";
+    
+    const files = sources
+      .map(s => s.metadata?.file || 'Unknown')
+      .filter(f => f !== 'Unknown')
+      .filter((f, i, arr) => arr.indexOf(f) === i); // Remove duplicates
+    
+    if (files.length === 0) {
+      const validatedCount = sources.filter(s => s.source_type === 'validated').length;
+      return validatedCount > 0 ? `${validatedCount} validated answer${validatedCount !== 1 ? 's' : ''}` : 'Various sources';
+    }
+    
+    if (files.length <= 2) {
+      return files.join(', ');
+    } else {
+      return `${files.slice(0, 2).join(', ')} +${files.length - 2} more`;
+    }
+  };
+
+  // Enhanced markdown renderer with better code formatting
   const MarkdownRenderer = ({ content }) => (
     <ReactMarkdown
       components={{
@@ -116,33 +193,55 @@ const App = () => {
           
           return !inline ? (
             <div style={{
-              margin: '12px 0',
+              margin: '16px 0',
               border: '1px solid #e1e5e9',
-              borderRadius: 6,
+              borderRadius: 8,
               overflow: 'hidden',
-              backgroundColor: '#f8f9fa'
+              backgroundColor: '#f8f9fa',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
             }}>
               {language && (
                 <div style={{
                   backgroundColor: '#e9ecef',
-                  padding: '4px 12px',
+                  padding: '8px 16px',
                   fontSize: '12px',
                   color: '#495057',
-                  fontWeight: 500,
-                  borderBottom: '1px solid #e1e5e9'
+                  fontWeight: 600,
+                  borderBottom: '1px solid #e1e5e9',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
                 }}>
-                  {language.toUpperCase()}
+                  <span>💻 {language}</span>
+                  <button 
+                    style={{
+                      background: 'none',
+                      border: '1px solid #6c757d',
+                      borderRadius: 4,
+                      padding: '2px 8px',
+                      fontSize: 10,
+                      cursor: 'pointer',
+                      color: '#6c757d'
+                    }}
+                    onClick={() => navigator.clipboard?.writeText(children)}
+                  >
+                    Copy
+                  </button>
                 </div>
               )}
               <pre style={{
                 margin: 0,
-                padding: '16px',
+                padding: '20px',
                 overflowX: 'auto',
                 backgroundColor: '#f8f9fa',
-                fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+                fontFamily: "'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace",
                 fontSize: '14px',
-                lineHeight: '1.4',
-                maxWidth: '100%'
+                lineHeight: '1.6',
+                maxWidth: '100%',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word'
               }}>
                 <code className={className} {...props}>
                   {children}
@@ -152,68 +251,258 @@ const App = () => {
           ) : (
             <code style={{
               backgroundColor: '#f3f4f6',
-              padding: '2px 4px',
-              borderRadius: 3,
-              fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+              padding: '3px 6px',
+              borderRadius: 4,
+              fontFamily: "'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace",
               fontSize: '0.9em',
-              color: '#e83e8c'
+              color: '#d63384',
+              border: '1px solid #f1f3f4'
             }} {...props}>
               {children}
             </code>
           );
         },
-        pre: ({children}) => children // Prevent double wrapping
+        pre: ({children}) => children
       }}
     >
       {content}
     </ReactMarkdown>
   );
 
-  // Simple inline source display for compact view
+  // Enhanced compact source display with better UX
   const CompactSourceDisplay = ({ sources, confidence }) => {
     if (!sources || sources.length === 0) return null;
 
+    const guidance = getConfidenceGuidance(confidence);
+    const filesList = getSourceFilesList(sources);
+
     return (
       <div style={{
-        margin: '8px 0',
-        padding: '6px 10px',
+        margin: '12px 0',
+        padding: '12px 16px',
         backgroundColor: '#f0f7ff',
         border: '1px solid #c2d8f2',
-        borderRadius: 4,
-        fontSize: 12,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8
+        borderRadius: 8,
+        fontSize: 13
       }}>
-        <span style={{ fontWeight: 600, color: '#1565c0' }}>
-          📚 {sources.length} source{sources.length !== 1 ? 's' : ''}
-        </span>
-        <ConfidenceIndicator 
-          confidence={confidence} 
-          sourceCount={sources.length}
-          size="small"
-        />
-        <span style={{ color: '#666', fontSize: 11 }}>
-          {sources.slice(0, 2).map(s => s.metadata?.file || 'Unknown').join(', ')}
-          {sources.length > 2 && ` +${sources.length - 2} more`}
-        </span>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 8
+        }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10
+          }}>
+            <span style={{ fontSize: 16 }}>📚</span>
+            <span style={{ fontWeight: 600, color: '#1565c0' }}>
+              {sources.length} source{sources.length !== 1 ? 's' : ''}
+            </span>
+            <ConfidenceIndicator 
+              confidence={confidence} 
+              sourceCount={sources.length}
+              size="small"
+            />
+          </div>
+          
+          <div style={{
+            fontSize: 11,
+            color: guidance.color,
+            fontWeight: 500,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4
+          }}>
+            <span>{guidance.icon}</span>
+            <span>{guidance.level.toUpperCase()}</span>
+          </div>
+        </div>
+        
+        <div style={{
+          fontSize: 12,
+          color: '#666',
+          marginBottom: 6
+        }}>
+          <strong>Sources:</strong> {filesList}
+        </div>
+        
+        <div style={{
+          fontSize: 11,
+          color: guidance.color,
+          fontStyle: 'italic',
+          padding: '6px 8px',
+          backgroundColor: 'rgba(255,255,255,0.7)',
+          borderRadius: 4,
+          border: `1px solid ${guidance.color}40`
+        }}>
+          💡 {guidance.message}
+        </div>
       </div>
     );
   };
 
-  // Submit handlers
+  // Enhanced empty state with clear next steps
+  const EmptyState = () => (
+    <div style={{
+      textAlign: 'center',
+      padding: '60px 20px',
+      color: '#666'
+    }}>
+      <div style={{ fontSize: 64, marginBottom: 20 }}>📚</div>
+      <h3 style={{ margin: '0 0 12px 0', color: '#333', fontSize: 20 }}>
+        Welcome to AI Documentation Assistant
+      </h3>
+      <p style={{ margin: '0 0 8px 0', fontSize: 15, color: '#666' }}>
+        Upload your project documentation to get started
+      </p>
+      <p style={{ margin: '0 0 24px 0', fontSize: 13, color: '#888' }}>
+        Supports: README files, API docs, setup guides (.md, .pdf, .txt)
+      </p>
+      <button
+        onClick={() => setShowUploadModal(true)}
+        style={{
+          padding: '16px 32px',
+          backgroundColor: '#1976d2',
+          color: 'white',
+          border: 'none',
+          borderRadius: 8,
+          cursor: 'pointer',
+          fontSize: 16,
+          fontWeight: 600,
+          boxShadow: '0 2px 8px rgba(25, 118, 210, 0.3)',
+          transition: 'all 0.2s ease'
+        }}
+        onMouseOver={e => e.target.style.transform = 'translateY(-1px)'}
+        onMouseOut={e => e.target.style.transform = 'translateY(0)'}
+      >
+        📄 Upload Documentation
+      </button>
+    </div>
+  );
+
+  // Professional query suggestions with better categorization
+  const QuerySuggestions = () => {
+    const suggestions = documentStats.total_chunks > 0 ? [
+      { text: "What are the main features of this project?", icon: "🎯" },
+      { text: "How do I set up the development environment?", icon: "⚙️" },
+      { text: "What technologies and frameworks are used?", icon: "🛠️" },
+      { text: "How do I deploy this application?", icon: "🚀" }
+    ] : [];
+    
+    if (suggestions.length === 0) return null;
+    
+    return (
+      <div style={{
+        marginTop: 20,
+        padding: 16,
+        backgroundColor: '#f8faff',
+        border: '1px solid #e0e7ff',
+        borderRadius: 8
+      }}>
+        <div style={{
+          fontSize: 13,
+          fontWeight: 600,
+          color: '#1565c0',
+          marginBottom: 12,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6
+        }}>
+          💡 Suggested questions for your documentation:
+        </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+          gap: 8
+        }}>
+          {suggestions.map((suggestion, idx) => (
+            <button
+              key={idx}
+              onClick={() => setQuestion(suggestion.text)}
+              style={{
+                padding: '10px 12px',
+                fontSize: 13,
+                backgroundColor: 'white',
+                border: '1px solid #d0d7de',
+                borderRadius: 6,
+                cursor: 'pointer',
+                color: '#24292f',
+                textAlign: 'left',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8
+              }}
+              onMouseOver={e => {
+                e.target.style.backgroundColor = '#f6f8fa';
+                e.target.style.borderColor = '#1976d2';
+                e.target.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+              }}
+              onMouseOut={e => {
+                e.target.style.backgroundColor = 'white';
+                e.target.style.borderColor = '#d0d7de';
+                e.target.style.boxShadow = 'none';
+              }}
+            >
+              <span style={{ fontSize: 14 }}>{suggestion.icon}</span>
+              <span>{suggestion.text}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // Enhanced error display
+  const ErrorDisplay = ({ error, onDismiss }) => {
+    if (!error) return null;
+    
+    return (
+      <div style={{
+        margin: '12px 0',
+        padding: '12px 16px',
+        backgroundColor: '#fff5f5',
+        border: '1px solid #fed7d7',
+        borderRadius: 8,
+        color: '#c53030',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 16 }}>⚠️</span>
+          <span style={{ fontSize: 14, fontWeight: 500 }}>{error}</span>
+        </div>
+        <button
+          onClick={onDismiss}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: '#c53030',
+            cursor: 'pointer',
+            fontSize: 16,
+            padding: 4
+          }}
+        >
+          ×
+        </button>
+      </div>
+    );
+  };
+
+  // Submit handlers (unchanged core logic, enhanced error handling)
   const handleStart = async () => {
-    // Show user message and pending spinner immediately
     setUiState("waiting");
     clearSources();
     setHistory([
       { role: "user", content: question },
-      { role: "assistant", content: null } // null means pending/spinner
+      { role: "assistant", content: null }
     ]);
     
     try {
       if (!USE_STREAMING) {
-        // Original blocking API call
         const data = await AssistantService.startConversation(question);
         setAssistantResponse(data.assistant_response);
         setUiState("idle");
@@ -223,170 +512,20 @@ const App = () => {
           { role: "assistant", content: data.assistant_response }
         ]);
       } else {
-        // Streaming API call
         const data = await AssistantService.createStreamingConversation(question);
         setThreadId(data.thread_id);
-        
-        // Initialize an empty response that will be built up token by token
         setAssistantResponse("");
-        
-        // Reset the accumulated response ref for this session
         startAccumulatedResponseRef.current = "";
         
-        // Start streaming the response
         const eventSource = AssistantService.streamResponse(
           data.thread_id,
-          // Message callback - handle incoming tokens and sources
           (data) => {
             if (data.content) {
-              // Update our ref with the new content
               startAccumulatedResponseRef.current += data.content;
-              
-              // Update React state with the accumulated content
               setAssistantResponse(startAccumulatedResponseRef.current);
-              
-              // Update history with current accumulated response
               setHistory([
                 { role: "user", content: question },
                 { role: "assistant", content: startAccumulatedResponseRef.current }
-              ]);
-            } else if (data.sources) {
-              // Handle sources event - FIXED: This was missing
-              handleSourcesEvent(data);
-            } else if (data.status) {
-              // Update UI state based on status updates
-              if (data.status === "user_feedback") {
-                setUiState("idle"); // Show review buttons
-              } else if (data.status === "finished") {
-                setUiState("finished");
-              }
-            }
-          },
-          // Error callback
-          (error) => {
-            console.error("Streaming error:", error);
-            setUiState("idle");
-            const errorMessage = error && error.message ? error.message : "Unknown error";
-            alert("Streaming error: " + errorMessage);
-          },
-          // Complete callback
-          () => {
-            console.log("Stream completed");
-          }
-        );
-      }
-    } catch (err) {
-      setAssistantResponse("");
-      setUiState("idle");
-      clearSources();
-      const errorMessage = err && err.message ? err.message : "Unknown error";
-      alert("Failed to contact backend: " + errorMessage);
-    }
-  };
-
-  const handleApprove = async () => {
-    setUiState("waiting");
-    setHistory([...history, { role: "assistant", content: null }]); // Show spinner
-    
-    try {
-      if (!USE_STREAMING) {
-        const data = await AssistantService.submitReview({
-          thread_id: threadId,
-          review_action: "approved"
-        });
-        setAssistantResponse(data.assistant_response);
-        setUiState("finished");
-        setValidationSuccess(true);
-        setHistory(prev => [
-          ...prev.slice(0, -1),
-          { role: "assistant", content: data.assistant_response }
-        ]);
-      } else {
-        const data = await AssistantService.resumeStreamingConversation({
-          thread_id: threadId,
-          review_action: "approved"
-        });
-        
-        setAssistantResponse("");
-        approveAccumulatedResponseRef.current = "";
-        
-        const eventSource = AssistantService.streamResponse(
-          threadId,
-          (data) => {
-            if (data.content) {
-              approveAccumulatedResponseRef.current += data.content;
-              setAssistantResponse(approveAccumulatedResponseRef.current);
-              setHistory(prev => [
-                ...prev.slice(0, -1),
-                { role: "assistant", content: approveAccumulatedResponseRef.current }
-              ]);
-            } else if (data.status) {
-              if (data.status === "finished") {
-                setUiState("finished");
-                setValidationSuccess(true);
-                loadDocumentStats(); // Refresh stats after validation
-              }
-            }
-          },
-          (error) => {
-            console.error("Streaming error:", error);
-            setUiState("idle");
-            const errorMessage = error && error.message ? error.message : "Unknown error";
-            alert("Streaming error: " + errorMessage);
-          },
-          () => {
-            console.log("Stream completed");
-          }
-        );
-      }
-    } catch (err) {
-      setUiState("idle");
-      const errorMessage = err && err.message ? err.message : "Unknown error";
-      alert("Failed to contact backend: " + errorMessage);
-    }
-  };
-
-  const handleFeedback = async () => {
-    setUiState("waiting");
-    setHistory([
-      ...history,
-      { role: "user", content: feedback },
-      { role: "assistant", content: null }
-    ]);
-    
-    try {
-      if (!USE_STREAMING) {
-        const data = await AssistantService.submitReview({
-          thread_id: threadId,
-          review_action: "feedback",
-          human_comment: feedback
-        });
-        setAssistantResponse(data.assistant_response);
-        setUiState("idle");
-        setHistory(prev => [
-          ...prev.slice(0, -1),
-          { role: "assistant", content: data.assistant_response }
-        ]);
-        setFeedback("");
-      } else {
-        const data = await AssistantService.resumeStreamingConversation({
-          thread_id: threadId,
-          review_action: "feedback",
-          human_comment: feedback
-        });
-        
-        setAssistantResponse("");
-        feedbackAccumulatedResponseRef.current = "";
-        
-        const eventSource = AssistantService.streamResponse(
-          threadId,
-          (data) => {
-            if (data.content) {
-              feedbackAccumulatedResponseRef.current += data.content;
-              setAssistantResponse(feedbackAccumulatedResponseRef.current);
-              setHistory(prev => [
-                ...prev.slice(0, -1),
-                { role: "assistant", content: feedbackAccumulatedResponseRef.current }
               ]);
             } else if (data.sources) {
               handleSourcesEvent(data);
@@ -401,24 +540,122 @@ const App = () => {
           (error) => {
             console.error("Streaming error:", error);
             setUiState("idle");
-            const errorMessage = error && error.message ? error.message : "Unknown error";
-            alert("Streaming error: " + errorMessage);
+            setErrorMessage(`Connection error: ${error.message}`);
           },
           () => {
             console.log("Stream completed");
           }
         );
-        
-        setFeedback("");
       }
     } catch (err) {
+      setAssistantResponse("");
       setUiState("idle");
-      const errorMessage = err && err.message ? err.message : "Unknown error";
-      alert("Failed to contact backend: " + errorMessage);
+      clearSources();
+      setErrorMessage(`Failed to process request: ${err.message}`);
     }
   };
 
-  // Enhanced new session handler
+  const handleApprove = async () => {
+    setUiState("waiting");
+    setHistory([...history, { role: "assistant", content: null }]);
+    
+    try {
+      const data = await AssistantService.resumeStreamingConversation({
+        thread_id: threadId,
+        review_action: "approved"
+      });
+      
+      setAssistantResponse("");
+      approveAccumulatedResponseRef.current = "";
+      
+      const eventSource = AssistantService.streamResponse(
+        threadId,
+        (data) => {
+          if (data.content) {
+            approveAccumulatedResponseRef.current += data.content;
+            setAssistantResponse(approveAccumulatedResponseRef.current);
+            setHistory(prev => [
+              ...prev.slice(0, -1),
+              { role: "assistant", content: approveAccumulatedResponseRef.current }
+            ]);
+          } else if (data.status) {
+            if (data.status === "finished") {
+              setUiState("finished");
+              setValidationSuccess(true);
+              loadDocumentStats();
+            }
+          }
+        },
+        (error) => {
+          console.error("Approval streaming error:", error);
+          setUiState("idle");
+          setErrorMessage(`Approval failed: ${error.message}`);
+        },
+        () => {
+          console.log("Approval stream completed");
+        }
+      );
+    } catch (err) {
+      setUiState("idle");
+      setErrorMessage(`Approval failed: ${err.message}`);
+    }
+  };
+
+  const handleFeedback = async () => {
+    setUiState("waiting");
+    setHistory([
+      ...history,
+      { role: "user", content: feedback },
+      { role: "assistant", content: null }
+    ]);
+    
+    try {
+      const data = await AssistantService.resumeStreamingConversation({
+        thread_id: threadId,
+        review_action: "feedback",
+        human_comment: feedback
+      });
+      
+      setAssistantResponse("");
+      feedbackAccumulatedResponseRef.current = "";
+      
+      const eventSource = AssistantService.streamResponse(
+        threadId,
+        (data) => {
+          if (data.content) {
+            feedbackAccumulatedResponseRef.current += data.content;
+            setAssistantResponse(feedbackAccumulatedResponseRef.current);
+            setHistory(prev => [
+              ...prev.slice(0, -1),
+              { role: "assistant", content: feedbackAccumulatedResponseRef.current }
+            ]);
+          } else if (data.sources) {
+            handleSourcesEvent(data);
+          } else if (data.status) {
+            if (data.status === "user_feedback") {
+              setUiState("idle");
+            } else if (data.status === "finished") {
+              setUiState("finished");
+            }
+          }
+        },
+        (error) => {
+          console.error("Feedback streaming error:", error);
+          setUiState("idle");
+          setErrorMessage(`Feedback processing failed: ${error.message}`);
+        },
+        () => {
+          console.log("Feedback stream completed");
+        }
+      );
+      
+      setFeedback("");
+    } catch (err) {
+      setUiState("idle");
+      setErrorMessage(`Feedback failed: ${err.message}`);
+    }
+  };
+
   const handleNewSession = () => {
     setUiState("idle");
     setQuestion("");
@@ -429,110 +666,6 @@ const App = () => {
     clearSources();
   };
 
-  // Query suggestions based on document stats
-  const getQuerySuggestions = () => {
-    if (documentStats.total_chunks === 0) {
-      return [];
-    }
-    
-    return [
-      "What technologies are used in this project?",
-      "How do I set up the development environment?",
-      "What are the main features?",
-      "How do I deploy this application?"
-    ];
-  };
-
-  // Empty state component
-  const EmptyState = () => (
-    <div style={{
-      textAlign: 'center',
-      padding: '40px 20px',
-      color: '#666'
-    }}>
-      <div style={{ fontSize: 48, marginBottom: 16 }}>📚</div>
-      <h3 style={{ margin: '0 0 12px 0', color: '#333' }}>
-        No documents uploaded yet
-      </h3>
-      <p style={{ margin: '0 0 20px 0', fontSize: 14 }}>
-        Upload documentation to start asking questions
-      </p>
-      <button
-        onClick={() => setShowUploadModal(true)}
-        style={{
-          padding: '12px 24px',
-          backgroundColor: '#1976d2',
-          color: 'white',
-          border: 'none',
-          borderRadius: 6,
-          cursor: 'pointer',
-          fontSize: 16,
-          fontWeight: 500
-        }}
-      >
-        📄 Upload Your First Document
-      </button>
-    </div>
-  );
-
-  // Query suggestions component
-  const QuerySuggestions = () => {
-    const suggestions = getQuerySuggestions();
-    
-    if (suggestions.length === 0) return null;
-    
-    return (
-      <div style={{
-        marginTop: 16,
-        padding: 12,
-        backgroundColor: '#f8faff',
-        border: '1px solid #e0e7ff',
-        borderRadius: 6
-      }}>
-        <div style={{
-          fontSize: 12,
-          fontWeight: 600,
-          color: '#1565c0',
-          marginBottom: 8
-        }}>
-          💡 Try asking:
-        </div>
-        <div style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 6
-        }}>
-          {suggestions.map((suggestion, idx) => (
-            <button
-              key={idx}
-              onClick={() => setQuestion(suggestion)}
-              style={{
-                padding: '4px 8px',
-                fontSize: 11,
-                backgroundColor: 'white',
-                border: '1px solid #d0d7de',
-                borderRadius: 4,
-                cursor: 'pointer',
-                color: '#24292f',
-                transition: 'all 0.2s ease'
-              }}
-              onMouseOver={(e) => {
-                e.target.style.backgroundColor = '#f6f8fa';
-                e.target.style.borderColor = '#1976d2';
-              }}
-              onMouseOut={(e) => {
-                e.target.style.backgroundColor = 'white';
-                e.target.style.borderColor = '#d0d7de';
-              }}
-            >
-              {suggestion}
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  };
-
   // Render
   return (
     <div style={{ 
@@ -540,24 +673,25 @@ const App = () => {
       justifyContent: 'center', 
       alignItems: 'flex-start', 
       margin: '40px auto', 
-      fontFamily: 'sans-serif',
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
       maxWidth: 1200,
       width: '95%'
     }}>
       
-      {/* Left Sidebar */}
+      {/* Enhanced Sidebar */}
       <div style={{ 
-        flex: '0 0 320px', 
-        maxWidth: 320, 
+        flex: '0 0 340px', 
+        maxWidth: 340, 
         marginRight: 32, 
-        background: '#fafbfc', 
-        borderRadius: 8, 
-        border: '1px solid #eee', 
-        padding: 16, 
+        background: 'linear-gradient(135deg, #fafbfc 0%, #f6f8fa 100%)', 
+        borderRadius: 12, 
+        border: '1px solid #e1e5e9', 
+        padding: 20, 
         display: 'flex', 
         flexDirection: 'column', 
         alignItems: 'center',
-        height: 'fit-content'
+        height: 'fit-content',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.05)'
       }}>
         <img 
           src="/hitl-assistent.png" 
@@ -565,176 +699,252 @@ const App = () => {
           style={{ 
             width: '75%', 
             height: 'auto', 
-            borderRadius: 6, 
-            boxShadow: '0 2px 12px #0001', 
-            marginBottom: 16 
+            borderRadius: 8, 
+            boxShadow: '0 4px 16px rgba(0,0,0,0.1)', 
+            marginBottom: 20 
           }} 
         />
         <div style={{ 
           fontSize: 16, 
-          color: '#444', 
+          color: '#1565c0', 
           textAlign: 'center', 
-          marginBottom: 12 
+          marginBottom: 16,
+          fontWeight: 600
         }}>
-          HITL Assistant Graph
+          AI Documentation Assistant
         </div>
         
-        {/* Document Stats */}
+        {/* Enhanced Knowledge Base Stats */}
         <div style={{ 
           width: '100%', 
-          padding: 8, 
+          padding: 16, 
           backgroundColor: 'white', 
-          borderRadius: 4, 
-          border: '1px solid #ddd',
-          fontSize: 12,
-          color: '#666',
-          marginBottom: 12
+          borderRadius: 8, 
+          border: '1px solid #e1e5e9',
+          fontSize: 13,
+          marginBottom: 16,
+          boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
         }}>
-          <div style={{ fontWeight: 600, marginBottom: 4, color: '#333' }}>
-            Knowledge Base
+          <div style={{ 
+            fontWeight: 600, 
+            marginBottom: 12, 
+            color: '#333',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6
+          }}>
+            <span style={{ fontSize: 16 }}>🧠</span>
+            Knowledge Base Health
           </div>
-          <div>📄 {documentStats.total_chunks || 0} document chunks</div>
-          <div>✅ {documentStats.total_validated || 0} validated answers</div>
+          
+          <div style={{ marginBottom: 8 }}>
+            📄 <strong>{documentStats.total_chunks || 0}</strong> document chunks
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            ✅ <strong>{documentStats.total_validated || 0}</strong> validated answers
+          </div>
+          
           {documentStats.total_chunks > 0 && (
             <div style={{ 
-              marginTop: 6, 
-              padding: '3px 6px', 
+              marginTop: 12, 
+              padding: '8px 12px', 
               backgroundColor: documentStats.total_validated > 0 ? '#e8f5e8' : '#fff3e0',
-              borderRadius: 3,
-              fontSize: 10,
+              borderRadius: 6,
+              fontSize: 12,
               fontWeight: 500,
-              color: documentStats.total_validated > 0 ? '#2e7d32' : '#e65100'
+              color: documentStats.total_validated > 0 ? '#2e7d32' : '#e65100',
+              textAlign: 'center'
             }}>
-              {documentStats.total_validated > 0 ? 
-                `${Math.round((documentStats.total_validated / documentStats.total_chunks) * 100)}% coverage` :
-                'Learning mode active'
-              }
+              {documentStats.total_validated > 0 ? (
+                <>
+                  🎯 {Math.round((documentStats.total_validated / documentStats.total_chunks) * 100)}% validated coverage
+                </>
+              ) : (
+                <>
+                  🌱 Learning mode - validate answers to improve accuracy
+                </>
+              )}
             </div>
           )}
         </div>
 
-        {/* Upload Button - Only show when modal is closed */}
+        {/* Enhanced Upload Button */}
         {!showUploadModal && (
           <button
             onClick={() => setShowUploadModal(true)}
             style={{
               width: '100%',
-              padding: '12px',
+              padding: '14px',
               backgroundColor: '#1976d2',
               color: 'white',
               border: 'none',
-              borderRadius: 6,
+              borderRadius: 8,
               cursor: 'pointer',
-              fontSize: 14,
-              fontWeight: 500,
+              fontSize: 15,
+              fontWeight: 600,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 8
+              gap: 10,
+              transition: 'all 0.2s ease',
+              boxShadow: '0 2px 8px rgba(25, 118, 210, 0.3)'
+            }}
+            onMouseOver={e => {
+              e.target.style.backgroundColor = '#1565c0';
+              e.target.style.transform = 'translateY(-1px)';
+            }}
+            onMouseOut={e => {
+              e.target.style.backgroundColor = '#1976d2';
+              e.target.style.transform = 'translateY(0)';
             }}
           >
-            📄 Upload Documents
+            <span style={{ fontSize: 18 }}>📄</span>
+            Upload Documents
           </button>
         )}
 
-        {/* Upload status when modal is open */}
+        {/* Upload Status */}
         {showUploadModal && (
           <div style={{
             width: '100%',
-            padding: 12,
+            padding: 14,
             backgroundColor: '#f0f7ff',
             border: '1px solid #c2d8f2',
-            borderRadius: 6,
-            fontSize: 12,
+            borderRadius: 8,
+            fontSize: 13,
             color: '#1565c0',
-            textAlign: 'center'
+            textAlign: 'center',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8
           }}>
-            📤 Upload in progress...
+            <span style={{ fontSize: 16 }}>📤</span>
+            Upload in progress...
           </div>
         )}
       </div>
 
-      {/* Main Content */}
+      {/* Enhanced Main Content */}
       <div style={{ 
-        maxWidth: 600, 
-        width: '100%', 
-        padding: 24, 
-        border: '1px solid #eee', 
-        borderRadius: 8, 
-        position: 'relative', 
-        background: '#fff' 
+        flex: 1,
+        maxWidth: 700, 
+        padding: 28, 
+        border: '1px solid #e1e5e9', 
+        borderRadius: 12, 
+        background: 'white',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.05)'
       }}>
         
-        {/* Header with New Session Button */}
+        {/* Header */}
         <div style={{ 
           display: 'flex', 
           justifyContent: 'space-between', 
           alignItems: 'center', 
-          marginBottom: 16 
+          marginBottom: 24 
         }}>
-          <h2 style={{ margin: 0 }}>AI Documentation Assistant</h2>
+          <h1 style={{ 
+            margin: 0, 
+            fontSize: 24, 
+            fontWeight: 700,
+            color: '#1976d2',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10
+          }}>
+            <span style={{ fontSize: 28 }}>🤖</span>
+            Documentation Assistant
+          </h1>
           <button
             onClick={handleNewSession}
             style={{ 
-              padding: "8px 18px", 
-              fontSize: 16, 
-              borderRadius: 6, 
-              background: "#f5f5f5", 
-              border: "1px solid #ddd", 
-              cursor: "pointer" 
+              padding: "10px 20px", 
+              fontSize: 14, 
+              borderRadius: 8, 
+              background: "#f8f9fa", 
+              border: "1px solid #e1e5e9", 
+              cursor: "pointer",
+              fontWeight: 500,
+              transition: 'all 0.2s ease'
             }}
+            onMouseOver={e => e.target.style.backgroundColor = '#e9ecef'}
+            onMouseOut={e => e.target.style.backgroundColor = '#f8f9fa'}
           >
-            New Session
+            🔄 New Session
           </button>
         </div>
 
-        {/* Empty State or Input Section */}
+        {/* Error Display */}
+        <ErrorDisplay error={errorMessage} onDismiss={() => setErrorMessage(null)} />
+
+        {/* Main Content Area */}
         {uiState === "idle" && history.length === 0 && (
           documentStats.total_chunks === 0 ? (
             <EmptyState />
           ) : (
             <div>
-              <input
-                type="text"
-                placeholder="Ask a question about your documentation..."
-                value={question}
-                onChange={e => setQuestion(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && question.trim()) handleStart(); }}
-                style={{ 
-                  width: "70%", 
-                  padding: 12, 
-                  fontSize: 18, 
-                  borderRadius: 6, 
-                  border: '1px solid #bbb', 
-                  marginRight: 8 
-                }}
-              />
-              <button 
-                onClick={handleStart}
-                disabled={!question.trim()}
-                style={{ 
-                  padding: '12px 32px', 
-                  fontSize: 20, 
-                  borderRadius: 6, 
-                  border: '1px solid #bbb', 
-                  background: question.trim() ? '#1976d2' : '#f5f5f5',
-                  color: question.trim() ? 'white' : '#999',
-                  cursor: question.trim() ? 'pointer' : 'not-allowed', 
-                  height: 48 
-                }}
-              >
-                Send
-              </button>
+              <div style={{ marginBottom: 16 }}>
+                <input
+                  type="text"
+                  placeholder="Ask about your documentation..."
+                  value={question}
+                  onChange={e => setQuestion(e.target.value)}
+                  onKeyDown={e => { 
+                    if (e.key === "Enter" && question.trim()) {
+                      e.preventDefault();
+                      handleStart();
+                    }
+                  }}
+                  style={{ 
+                    width: "calc(100% - 120px)", 
+                    padding: '16px 20px', 
+                    fontSize: 16, 
+                    borderRadius: 8, 
+                    border: '2px solid #e1e5e9', 
+                    marginRight: 12,
+                    fontFamily: 'inherit',
+                    outline: 'none',
+                    transition: 'border-color 0.2s ease'
+                  }}
+                  onFocus={e => e.target.style.borderColor = '#1976d2'}
+                  onBlur={e => e.target.style.borderColor = '#e1e5e9'}
+                />
+                <button 
+                  onClick={handleStart}
+                  disabled={!question.trim()}
+                  style={{ 
+                    padding: '16px 24px', 
+                    fontSize: 16, 
+                    borderRadius: 8, 
+                    border: 'none', 
+                    background: question.trim() ? 'linear-gradient(135deg, #1976d2, #1565c0)' : '#e9ecef',
+                    color: question.trim() ? 'white' : '#adb5bd',
+                    cursor: question.trim() ? 'pointer' : 'not-allowed', 
+                    fontWeight: 600,
+                    transition: 'all 0.2s ease',
+                    boxShadow: question.trim() ? '0 2px 8px rgba(25, 118, 210, 0.3)' : 'none'
+                  }}
+                  onMouseOver={e => {
+                    if (question.trim()) {
+                      e.target.style.transform = 'translateY(-1px)';
+                    }
+                  }}
+                  onMouseOut={e => {
+                    e.target.style.transform = 'translateY(0)';
+                  }}
+                >
+                  Send
+                </button>
+              </div>
               
-              {/* Query Suggestions */}
               <QuerySuggestions />
             </div>
           )
         )}
 
-        {/* Sources Display - Show during waiting and idle states */}
+        {/* Enhanced Sources Display */}
         {sources.length > 0 && (uiState === "waiting" || uiState === "idle") && (
-          <div style={{ margin: '16px 0' }}>
+          <div style={{ margin: '20px 0' }}>
             <CompactSourceDisplay sources={sources} confidence={retrievalConfidence} />
             <SourceViewer 
               sources={sources} 
@@ -744,66 +954,80 @@ const App = () => {
           </div>
         )}
 
-        {/* Conversation History */}
+        {/* Enhanced Conversation History */}
         {history.length > 0 && (
-          <div style={{ margin: "24px 0" }}>
+          <div style={{ margin: "28px 0" }}>
             {history.map((msg, idx) => {
-              // Hide the last assistant message if in finished state
               if (uiState === "finished" && msg.role === "assistant" && idx === history.length - 1) {
                 return null;
               }
               
               let hint = null;
               if (msg.role === "user") {
-                hint = idx === 0 ? "Initial request" : "Feedback";
+                hint = idx === 0 ? "Initial request" : "Your feedback";
               }
               
               return (
                 <div key={idx} style={{ 
                   textAlign: msg.role === "user" ? "right" : "left", 
-                  margin: "12px 0" 
+                  margin: "20px 0" 
                 }}>
                   {hint && (
-                    <div style={{ fontSize: 12, color: "#888", marginBottom: 2 }}>
+                    <div style={{ 
+                      fontSize: 12, 
+                      color: "#6c757d", 
+                      marginBottom: 6,
+                      fontWeight: 500
+                    }}>
                       {hint}
                     </div>
                   )}
                   <div style={{
                     display: 'inline-block',
-                    maxWidth: '85%',
-                    padding: msg.role === "assistant" ? '12px 16px' : '8px 12px',
-                    backgroundColor: msg.role === "assistant" ? 'rgba(25, 118, 210, 0.08)' : '#f0f7ff',
-                    border: msg.role === "assistant" ? '1px solid rgba(25, 118, 210, 0.2)' : '1px solid #c2d8f2',
-                    borderRadius: msg.role === "assistant" ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
-                    textAlign: 'left'
+                    maxWidth: msg.role === "user" ? '80%' : '100%',
+                    padding: msg.role === "assistant" ? '20px 24px' : '12px 16px',
+                    backgroundColor: msg.role === "assistant" ? '#f8faff' : '#e3f2fd',
+                    border: msg.role === "assistant" ? '1px solid #c2d8f2' : '1px solid #90caf9',
+                    borderRadius: msg.role === "assistant" ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                    textAlign: 'left',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
                   }}>
-                    <span style={{
-                      fontWeight: msg.role === "user" ? 600 : 700,
-                      color: msg.role === "assistant" ? '#1976d2' : '#1565c0',
-                      fontSize: 13,
-                      marginBottom: msg.role === "assistant" ? 6 : 0,
-                      display: 'block'
+                    <div style={{
+                      fontWeight: 600,
+                      color: msg.role === "assistant" ? '#1976d2' : '#0d47a1',
+                      fontSize: 14,
+                      marginBottom: msg.role === "assistant" ? 12 : 6,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6
                     }}>
+                      <span style={{ fontSize: 16 }}>
+                        {msg.role === "user" ? "👤" : "🤖"}
+                      </span>
                       {msg.role === "user" ? "You" : "Assistant"}
-                    </span>
+                    </div>
                     
                     {msg.role === "assistant" && msg.content === null ? (
                       <div style={{ 
                         display: "flex", 
                         alignItems: "center",
-                        gap: 8,
-                        color: '#666'
+                        gap: 12,
+                        color: '#6c757d',
+                        fontSize: 14
                       }}>
                         <div style={{
-                          border: "3px solid #eee",
+                          border: "3px solid #e9ecef",
                           borderTop: "3px solid #1976d2",
                           borderRadius: "50%",
-                          width: 20,
-                          height: 20,
+                          width: 24,
+                          height: 24,
                           animation: "spin 1s linear infinite"
                         }} />
-                        <span style={{ fontSize: 14 }}>
-                          {sources.length > 0 ? "Generating response..." : "Finding relevant sources..."}
+                        <span>
+                          {sources.length > 0 ? 
+                            "Generating response with citations..." : 
+                            "Finding relevant documentation..."
+                          }
                         </span>
                         <style>{`
                           @keyframes spin {
@@ -813,9 +1037,11 @@ const App = () => {
                         `}</style>
                       </div>
                     ) : msg.role === "assistant" ? (
-                      <MarkdownRenderer content={msg.content} />
+                      <div style={{ fontSize: 15, lineHeight: 1.6 }}>
+                        <MarkdownRenderer content={msg.content} />
+                      </div>
                     ) : (
-                      <div style={{ fontSize: 15, lineHeight: 1.4 }}>
+                      <div style={{ fontSize: 15, lineHeight: 1.5, color: '#1565c0' }}>
                         {msg.content}
                       </div>
                     )}
@@ -826,50 +1052,61 @@ const App = () => {
           </div>
         )}
 
-        {/* Feedback Form */}
+        {/* Enhanced Feedback Form */}
         {uiState === "user_feedback" && (
           <div style={{ 
-            marginTop: 24, 
-            background: '#f8fafd', 
-            border: '1px solid #e3eaf2', 
-            borderRadius: 6, 
-            padding: 18 
+            marginTop: 28, 
+            background: 'linear-gradient(135deg, #fff8e1 0%, #fff3e0 100%)', 
+            border: '1px solid #ffcc02', 
+            borderRadius: 12, 
+            padding: 24 
           }}>
-            <div style={{ marginBottom: 8, fontWeight: 600 }}>
-              Please provide feedback to improve the assistant's answer:
+            <div style={{ 
+              marginBottom: 12, 
+              fontWeight: 600,
+              color: '#e65100',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8
+            }}>
+              <span style={{ fontSize: 18 }}>💭</span>
+              Help improve this response:
             </div>
             <textarea
               ref={feedbackInputRef}
               value={feedback}
               onChange={e => setFeedback(e.target.value)}
-              rows={3}
+              rows={4}
               style={{ 
-                width: '95%', 
-                padding: 12, 
-                fontSize: 16, 
-                borderRadius: 6, 
-                border: '1px solid #bbb', 
+                width: '100%', 
+                padding: 16, 
+                fontSize: 15, 
+                borderRadius: 8, 
+                border: '2px solid #ffcc02', 
                 resize: 'vertical',
-                fontFamily: 'inherit'
+                fontFamily: 'inherit',
+                outline: 'none',
+                boxSizing: 'border-box'
               }}
-              placeholder="Your feedback..."
+              placeholder="What could be improved? Be specific about missing information, incorrect details, or clarity issues..."
             />
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginTop: 16, display: 'flex', gap: 12 }}>
               <button
                 onClick={handleFeedback}
                 disabled={!feedback.trim()}
                 style={{ 
-                  marginRight: 8, 
-                  padding: "10px 24px", 
-                  fontSize: 16,
-                  backgroundColor: feedback.trim() ? '#1976d2' : '#ccc',
+                  padding: "12px 24px", 
+                  fontSize: 15,
+                  backgroundColor: feedback.trim() ? '#ff9800' : '#ccc',
                   color: 'white',
                   border: 'none',
-                  borderRadius: 6,
-                  cursor: feedback.trim() ? 'pointer' : 'not-allowed'
+                  borderRadius: 8,
+                  cursor: feedback.trim() ? 'pointer' : 'not-allowed',
+                  fontWeight: 600,
+                  transition: 'all 0.2s ease'
                 }}
               >
-                Submit Feedback
+                📤 Submit Feedback
               </button>
               <button
                 onClick={() => {
@@ -877,13 +1114,15 @@ const App = () => {
                   setFeedback("");
                 }}
                 style={{ 
-                  padding: "10px 24px", 
-                  fontSize: 16,
-                  backgroundColor: '#f5f5f5',
-                  color: '#333',
-                  border: '1px solid #ddd',
-                  borderRadius: 6,
-                  cursor: 'pointer'
+                  padding: "12px 24px", 
+                  fontSize: 15,
+                  backgroundColor: 'white',
+                  color: '#666',
+                  border: '2px solid #e1e5e9',
+                  borderRadius: 8,
+                  cursor: 'pointer',
+                  fontWeight: 500,
+                  transition: 'all 0.2s ease'
                 }}
               >
                 Cancel
@@ -895,136 +1134,180 @@ const App = () => {
         {/* Enhanced Review Buttons */}
         {uiState === "idle" && (
           (assistantResponse || (history.length > 0 && history[history.length - 1].role === "assistant" && history[history.length - 1].content)) && (
-            <div style={{ marginTop: 24 }}>
-              {/* Show confidence indicator if available */}
+            <div style={{ marginTop: 28 }}>
+              {/* Enhanced Confidence Display */}
               {retrievalConfidence && (
-                <div style={{ marginBottom: 12, textAlign: 'center' }}>
-                  <ConfidenceIndicator 
-                    confidence={retrievalConfidence}
-                    sourceCount={sources.length}
-                    size="medium"
-                  />
+                <div style={{ 
+                  marginBottom: 16, 
+                  textAlign: 'center',
+                  padding: 12,
+                  backgroundColor: '#f8faff',
+                  borderRadius: 8,
+                  border: '1px solid #e0e7ff'
+                }}>
+                  <div style={{ marginBottom: 8 }}>
+                    <ConfidenceIndicator 
+                      confidence={retrievalConfidence}
+                      sourceCount={sources.length}
+                      size="medium"
+                    />
+                  </div>
+                  <div style={{ 
+                    fontSize: 12, 
+                    color: '#666',
+                    fontStyle: 'italic'
+                  }}>
+                    {getConfidenceGuidance(retrievalConfidence).message}
+                  </div>
                 </div>
               )}
               
-              <div style={{ textAlign: 'right' }}>
-                <button
-                  onClick={handleApprove}
-                  style={{ 
-                    marginRight: 8, 
-                    padding: "12px 24px", 
-                    fontSize: 16,
-                    backgroundColor: '#4caf50',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: 6,
-                    cursor: 'pointer',
-                    fontWeight: 500,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    float: 'right',
-                    marginLeft: 8
-                  }}
-                >
-                  ✓ Approve & Validate
-                </button>
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'flex-end',
+                gap: 12
+              }}>
                 <button
                   onClick={() => setUiState("user_feedback")}
                   style={{ 
-                    padding: "12px 24px", 
-                    fontSize: 16,
+                    padding: "14px 24px", 
+                    fontSize: 15,
                     backgroundColor: '#ff9800',
                     color: 'white',
                     border: 'none',
-                    borderRadius: 6,
+                    borderRadius: 8,
                     cursor: 'pointer',
-                    fontWeight: 500,
-                    float: 'right'
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    transition: 'all 0.2s ease',
+                    boxShadow: '0 2px 8px rgba(255, 152, 0, 0.3)'
                   }}
+                  onMouseOver={e => e.target.style.transform = 'translateY(-1px)'}
+                  onMouseOut={e => e.target.style.transform = 'translateY(0)'}
                 >
-                  💬 Provide Feedback
+                  <span style={{ fontSize: 16 }}>💬</span>
+                  Provide Feedback
                 </button>
-                <div style={{ clear: 'both' }} />
+                
+                <button
+                  onClick={handleApprove}
+                  style={{ 
+                    padding: "14px 24px", 
+                    fontSize: 15,
+                    backgroundColor: '#4caf50',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    transition: 'all 0.2s ease',
+                    boxShadow: '0 2px 8px rgba(76, 175, 80, 0.3)'
+                  }}
+                  onMouseOver={e => e.target.style.transform = 'translateY(-1px)'}
+                  onMouseOut={e => e.target.style.transform = 'translateY(0)'}
+                >
+                  <span style={{ fontSize: 16 }}>✓</span>
+                  Approve & Validate
+                </button>
               </div>
             </div>
           )
         )}
 
-        {/* Enhanced Final Version with Validation Success */}
+        {/* Enhanced Final Version */}
         {uiState === "finished" && (
-          <div style={{ marginTop: 24 }}>
-            {/* Validation Success Message */}
+          <div style={{ marginTop: 28 }}>
+            {/* Enhanced Validation Success */}
             {validationSuccess && (
               <div style={{
-                marginBottom: 16,
-                padding: 12,
-                backgroundColor: '#e8f5e8',
-                border: '1px solid #4caf50',
-                borderRadius: 6,
+                marginBottom: 20,
+                padding: 20,
+                backgroundColor: 'linear-gradient(135deg, #e8f5e8 0%, #f1f8e9 100%)',
+                border: '2px solid #4caf50',
+                borderRadius: 12,
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8
+                gap: 12,
+                boxShadow: '0 4px 12px rgba(76, 175, 80, 0.15)'
               }}>
-                <span style={{ fontSize: 16 }}>✅</span>
-                <div>
-                  <div style={{ fontWeight: 600, color: '#2e7d32', fontSize: 14 }}>
-                    Answer Validated Successfully
+                <span style={{ fontSize: 24 }}>🎉</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ 
+                    fontWeight: 700, 
+                    color: '#2e7d32', 
+                    fontSize: 16,
+                    marginBottom: 4
+                  }}>
+                    Answer Validated Successfully!
                   </div>
-                  <div style={{ fontSize: 12, color: '#388e3c', marginTop: 2 }}>
-                    This response will be prioritized in future queries
+                  <div style={{ 
+                    fontSize: 13, 
+                    color: '#388e3c',
+                    lineHeight: 1.4
+                  }}>
+                    This response has been stored and will be prioritized for similar future questions, improving the system's accuracy.
                   </div>
                 </div>
                 {retrievalConfidence && (
-                  <div style={{ marginLeft: 'auto' }}>
-                    <ConfidenceIndicator 
-                      confidence={retrievalConfidence}
-                      sourceCount={sources.length}
-                      hasValidated={true}
-                      size="small"
-                    />
-                  </div>
+                  <ConfidenceIndicator 
+                    confidence={retrievalConfidence}
+                    sourceCount={sources.length}
+                    hasValidated={true}
+                    size="medium"
+                  />
                 )}
               </div>
             )}
 
-            {/* Final Response */}
+            {/* Enhanced Final Response */}
             <div style={{ 
-              background: '#f0f7ff', 
-              border: '1px solid #c2d8f2', 
-              borderRadius: 6, 
-              padding: 18 
+              background: 'linear-gradient(135deg, #f0f7ff 0%, #e8f4fd 100%)', 
+              border: '2px solid #1976d2', 
+              borderRadius: 12, 
+              padding: 24,
+              boxShadow: '0 4px 12px rgba(25, 118, 210, 0.15)'
             }}>
               <div style={{ 
-                marginBottom: 8, 
-                fontWeight: 600, 
+                marginBottom: 16, 
+                fontWeight: 700, 
                 color: '#1976d2',
+                fontSize: 16,
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8
+                gap: 10
               }}>
-                Final Validated Response:
+                <span style={{ fontSize: 20 }}>✨</span>
+                Final Validated Response
                 {validationSuccess && (
                   <span style={{
                     backgroundColor: '#4caf50',
                     color: 'white',
-                    padding: '2px 6px',
-                    borderRadius: 10,
-                    fontSize: 10,
-                    fontWeight: 500
+                    padding: '4px 8px',
+                    borderRadius: 12,
+                    fontSize: 11,
+                    fontWeight: 600
                   }}>
                     VALIDATED
                   </span>
                 )}
               </div>
               
-              <div style={{ padding: 12 }}>
+              <div>
                 <MarkdownRenderer content={assistantResponse} />
               </div>
 
               {/* Sources in finished state */}
               {sources.length > 0 && (
-                <div style={{ marginTop: 12 }}>
+                <div style={{ 
+                  marginTop: 20,
+                  paddingTop: 16,
+                  borderTop: '1px solid #c2d8f2'
+                }}>
                   <CompactSourceDisplay sources={sources} confidence={retrievalConfidence} />
                 </div>
               )}
@@ -1035,6 +1318,7 @@ const App = () => {
         {/* Upload Modal */}
         {showUploadModal && (
           <DocumentUploader 
+            currentStats={documentStats}
             onUploadComplete={(results) => {
               console.log("Upload completed:", results);
               loadDocumentStats();

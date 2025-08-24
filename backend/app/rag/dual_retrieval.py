@@ -128,7 +128,7 @@ class DualRetrievalSystem:
                         query_embedding: List[float],
                         original_query: str,
                         top_k: int) -> List[RetrievalResult]:
-        """Search validated answers collection"""
+        """FIXED: Search validated answers with proper metadata handling"""
         
         try:
             results = self.vector_store.search_validated_answers(query_embedding, top_k)
@@ -148,11 +148,28 @@ class DualRetrievalSystem:
                     confidence = min(1.0, confidence * 1.2)
                     logger.debug("Applied exact query match boost")
                 
+                # FIXED: Better source file handling for validated answers
+                source_file = metadata.get('source_file', 'Unknown')
+                
+                # If source_file is Unknown, try to extract from validated_from_files
+                if source_file == 'Unknown':
+                    try:
+                        validated_from_files = json.loads(metadata.get('validated_from_files', '[]'))
+                        if validated_from_files:
+                            source_file = validated_from_files[0]  # Use first source file
+                        else:
+                            # Create a descriptive name based on query
+                            query_preview = metadata.get('original_query', '')[:30]
+                            source_file = f"Validated: {query_preview}..." if query_preview else "Validated Answer"
+                    except (json.JSONDecodeError, TypeError):
+                        source_file = "Validated Answer"
+                
                 # FIXED: Reconstruct validation_info from flat metadata
                 validation_info = {
                     "approved_by": metadata.get('approved_by', 'unknown'),
                     "approved_at": metadata.get('approved_at', ''),
-                    "feedback_received": metadata.get('feedback_received', '')
+                    "feedback_received": metadata.get('feedback_received', ''),
+                    "validated_from_files": metadata.get('validated_from_files', '[]')
                 }
                 
                 # FIXED: Parse source_chunks from JSON
@@ -163,11 +180,20 @@ class DualRetrievalSystem:
                 except (json.JSONDecodeError, TypeError):
                     source_chunks = []
                 
+                # FIXED: Enhanced metadata for better frontend display
+                enhanced_metadata = {
+                    **metadata,
+                    "source_file": source_file,
+                    "file": source_file,  # Frontend expects 'file' key
+                    "section": metadata.get('section', 'Validated Response'),
+                    "chunk_type": metadata.get('chunk_type', 'validated_answer')
+                }
+                
                 retrieval_results.append(RetrievalResult(
                     content=metadata.get('content', ''),
                     source='validated',
                     confidence=confidence,
-                    metadata=metadata,
+                    metadata=enhanced_metadata,
                     chunk_ids=source_chunks,
                     validation_info=validation_info
                 ))
@@ -182,6 +208,7 @@ class DualRetrievalSystem:
         except Exception as e:
             logger.error(f"Error searching validated answers: {e}")
             return []    
+    
     def _search_rag(self, 
                    query_embedding: List[float],
                    top_k: int) -> List[RetrievalResult]:
@@ -300,7 +327,7 @@ class DualRetrievalSystem:
                             thread_id: str,
                             source_chunks: List[str],
                             feedback: Optional[str] = None):
-        """Add a human-validated answer to the validated collection"""
+        """FIXED: Add a human-validated answer with proper source file preservation"""
         
         try:
             # Generate combined embedding (weighted average)
@@ -313,22 +340,64 @@ class DualRetrievalSystem:
                 for q, a in zip(query_embedding, answer_embedding)
             ]
             
-            # Create FLAT metadata (ChromaDB requirement)
+            # FIXED: Extract source file info from source_chunks to preserve filename
+            source_file_info = []
+            primary_source_file = "Validated Answer"  # Default fallback
+            
+            if source_chunks:
+                try:
+                    # Get metadata from source chunks to extract filenames
+                    chunk_results = self.vector_store.document_chunks.get(
+                        ids=source_chunks,
+                        include=["metadatas"]
+                    )
+                    
+                    if chunk_results and chunk_results.get('metadatas'):
+                        for chunk_metadata in chunk_results['metadatas']:
+                            if chunk_metadata and chunk_metadata.get('source_file'):
+                                file_name = chunk_metadata['source_file']
+                                if file_name not in source_file_info:
+                                    source_file_info.append(file_name)
+                        
+                        # Use the first source file as primary
+                        if source_file_info:
+                            primary_source_file = source_file_info[0]
+                            logger.info(f"Extracted source file info: {primary_source_file} (from {len(source_file_info)} files)")
+                    
+                except Exception as e:
+                    logger.warning(f"Could not extract source file info from chunks: {e}")
+            
+            # If no source files found, create descriptive name
+            if not source_file_info:
+                query_words = query.replace(' ', '_').replace('?', '').replace('!', '')[:30]
+                primary_source_file = f"Validated_{query_words}"
+                logger.info(f"No source files found, using generated name: {primary_source_file}")
+            
+            # FIXED: Create metadata with preserved source information
             validation_id = self._hash_text(f"{query}{answer}{thread_id}")
             metadata = {
                 "id": validation_id,
                 "content": answer,
                 "original_query": query,
                 "thread_id": thread_id,
-                # FIXED: Flatten validator_info fields
+                # FIXED: Store source file information properly
+                "source_file": primary_source_file,
+                "file": primary_source_file,  # Frontend expects 'file' key
+                "validated_from_files": json.dumps(source_file_info),  # Store all source files
+                "section": "Validated Response",
+                # Validator info
                 "approved_by": "thread_user",
                 "approved_at": datetime.now().isoformat(),
                 "feedback_received": feedback or "",
-                "source_chunks_json": json.dumps(source_chunks),  # Serialize list as JSON string
+                "source_chunks_json": json.dumps(source_chunks),
                 "confidence_score": 1.0,
                 "validation_count": 1,
                 "last_accessed": datetime.now().isoformat(),
-                "usage_count": 0
+                "usage_count": 0,
+                # Additional context
+                "chunk_type": "validated_answer",
+                "has_code": "```" in answer or "    " in answer,  # Simple code detection
+                "doc_type": "validated"
             }
             
             # Add to collection
@@ -344,10 +413,12 @@ class DualRetrievalSystem:
             if query_hash in self.query_cache:
                 del self.query_cache[query_hash]
             
-            logger.info(f"Added validated answer for query: {query[:50]}...")
+            logger.info(f"Added validated answer for query: {query[:50]}... (source: {primary_source_file})")
             
         except Exception as e:
-            logger.error(f"Error adding validated answer: {e}")  
+            logger.error(f"Error adding validated answer: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
           
     def _get_embedding(self, text: str) -> List[float]:
         """Get embedding with caching"""
